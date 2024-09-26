@@ -1,5 +1,200 @@
-template-repository (1.0-1) unstable; urgency=medium
+binaryen (108-1) unstable; urgency=medium
 
-  * Initial release
+  * New upstream version 108
+  * Drop no-gtests.patch.
+  * Disable the tests to avoid a dependency on gtests.
+  * Declare compliance with Debian Policy 4.6.1.
 
- -- Tsic404 <liuheng@deepin.org>  Sat, 28 Jan 2023 13:46:49 +0800
+ -- Markus Koschany <apo@debian.org>  Sat, 28 May 2022 14:15:15 +0200
+
+binaryen (106-1) unstable; urgency=medium
+
+  * New upstream version 106.
+  * Build-depend on libgtest-dev and do not look for a local copy of the
+    gtest library.
+
+ -- Markus Koschany <apo@debian.org>  Fri, 29 Apr 2022 12:50:19 +0200
+
+binaryen (105-1) unstable; urgency=medium
+
+  * New upstream version 105.
+
+ -- Markus Koschany <apo@debian.org>  Sun, 16 Jan 2022 12:52:04 +0100
+
+binaryen (104-1) unstable; urgency=medium
+
+  * New upstream version 104.
+
+ -- Markus Koschany <apo@debian.org>  Tue, 21 Dec 2021 12:36:52 +0100
+
+binaryen (103-1) unstable; urgency=medium
+
+  * New upstream version 103.
+
+ -- Markus Koschany <apo@debian.org>  Sun, 12 Dec 2021 03:04:56 +0100
+
+binaryen (102-1) unstable; urgency=medium
+
+  * New upstream version 102.
+
+ -- Markus Koschany <apo@debian.org>  Tue, 14 Sep 2021 00:21:00 +0200
+
+binaryen (101-1) unstable; urgency=medium
+
+  * New upstream version 101.
+  * Declare compliance with Debian Policy 4.6.0.
+
+ -- Markus Koschany <apo@debian.org>  Wed, 18 Aug 2021 20:41:28 +0200
+
+binaryen (100-1) experimental; urgency=medium
+
+  * New upstream version 100.
+  * Drop all patches. Fixed upstream.
+
+ -- Markus Koschany <apo@debian.org>  Tue, 09 Mar 2021 23:53:29 +0100
+
+binaryen (99-3) unstable; urgency=medium
+
+  * Set the correct project version in CMakeLists.txt. (Closes: #981638)
+
+ -- Markus Koschany <apo@debian.org>  Tue, 02 Feb 2021 14:54:30 +0100
+
+binaryen (99-2) unstable; urgency=medium
+
+  * Install missing wasm-delegations.h file.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 11 Jan 2021 23:07:17 +0100
+
+binaryen (99-1) unstable; urgency=medium
+
+  * New upstream version 99.
+  * Declare compliance with Debian Policy 4.5.1.
+
+ -- Markus Koschany <apo@debian.org>  Sun, 10 Jan 2021 01:11:59 +0100
+
+binaryen (98-1) unstable; urgency=medium
+
+  * New upstream version 98.
+
+ -- Markus Koschany <apo@debian.org>  Sat, 17 Oct 2020 15:17:51 +0200
+
+binaryen (97-1) unstable; urgency=medium
+
+  * New upstream version 97.
+
+ -- Markus Koschany <apo@debian.org>  Sat, 19 Sep 2020 13:06:35 +0200
+
+binaryen (96-1) unstable; urgency=medium
+
+  * New upstream version 96.
+
+ -- Markus Koschany <apo@debian.org>  Tue, 18 Aug 2020 01:12:47 +0200
+
+binaryen (95-1) unstable; urgency=medium
+
+  * New upstream version 95.
+
+ -- Markus Koschany <apo@debian.org>  Fri, 24 Jul 2020 01:37:59 +0200
+
+binaryen (94-1) unstable; urgency=medium
+
+  * New upstream version 94.
+  * Switch to debhelper-compat = 13.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 15 Jun 2020 22:50:08 +0200
+
+binaryen (93-1) unstable; urgency=medium
+
+  * New upstream version 93.
+
+ -- Markus Koschany <apo@debian.org>  Sun, 03 May 2020 23:07:01 +0200
+
+binaryen (92-1) unstable; urgency=medium
+
+  * New upstream version 92.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 27 Apr 2020 11:17:59 +0200
+
+binaryen (91-1) unstable; urgency=medium
+
+  * New upstream version 91.
+  * Drop all patches. Fixed upstream.
+  * Declare compliance with Debian Policy 4.5.0.
+
+ -- Markus Koschany <apo@debian.org>  Wed, 26 Feb 2020 21:58:27 +0100
+
+binaryen (90-1) unstable; urgency=medium
+
+  * New upstream version 90.
+  * Update debian/copyright and mention the LLVM exception.
+  * Declare compliance with Debian Policy 4.4.1.
+  * Add BINARYEN_VERSION_INFO.patch to avoid a build-dependency on Git.
+
+ -- Markus Koschany <apo@debian.org>  Tue, 31 Dec 2019 15:43:52 +0100
+
+binaryen (89-1) unstable; urgency=medium
+
+  * New upstream version 89.
+    - Fix CVE-2019-15758:
+      Missing validation rules in asmjs/asmangle.cpp can lead to an Assertion
+      Failure at wasm/wasm.cpp in wasm::asmangle. A crafted input can cause
+      denial-of-service, as demonstrated by wasm2js.
+    - Fix CVE-2019-15759:
+      Two visitors in ir/ExpressionManipulator.cpp can lead to a NULL pointer
+      dereference in wasm::LocalSet::finalize in wasm/wasm.cpp. A crafted input
+      can cause segmentation faults, leading to denial-of-service, as
+      demonstrated by wasm2js.
+      Thanks to Moritz Muehlenhoff for the report. (Closes: #936024)
+  * d/control: Build with python3. Add python3.patch to avoid a FTBFS.
+
+ -- Markus Koschany <apo@debian.org>  Thu, 29 Aug 2019 16:04:13 +0200
+
+binaryen (87-1) unstable; urgency=medium
+
+  * New upstream version 87.
+  * Declare compliance with Debian Policy 4.4.0.
+  * Use debhelper-compat = 12.
+
+ -- Markus Koschany <apo@debian.org>  Wed, 17 Jul 2019 21:37:56 +0200
+
+binaryen (68-1) unstable; urgency=medium
+
+  * New upstream version 68.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 18 Feb 2019 23:38:08 +0100
+
+binaryen (67-1) unstable; urgency=medium
+
+  * New upstream version 67.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 04 Feb 2019 14:18:01 +0100
+
+binaryen (66-1) unstable; urgency=medium
+
+  * New upstream version 66.
+    - Fix CVE-2019-7151, CVE-2019-7152, CVE-2019-7153 and CVE-2019-7154.
+      (Closes: #920853)
+
+ -- Markus Koschany <apo@debian.org>  Tue, 29 Jan 2019 23:02:15 +0100
+
+binaryen (64-1) unstable; urgency=medium
+
+  * New upstream version 64.
+  * Drop fix-alignment.patch. Merged upstream.
+  * Switch to compat level 12.
+
+ -- Markus Koschany <apo@debian.org>  Mon, 21 Jan 2019 22:29:52 +0100
+
+binaryen (63-1) unstable; urgency=medium
+
+  * New upstream version 63.
+  * Fix FTBFS on armel, armhf, mips, mipsel, s390x, m68k, alpha and sh4.
+  * Declare compliance with Debian Policy 4.3.0.
+
+ -- Markus Koschany <apo@debian.org>  Fri, 04 Jan 2019 17:19:47 +0100
+
+binaryen (61-1) unstable; urgency=medium
+
+  * Initial release. (Closes: #916612)
+
+ -- Markus Koschany <apo@debian.org>  Mon, 17 Dec 2018 22:33:06 +0100
