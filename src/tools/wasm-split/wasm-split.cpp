@@ -17,6 +17,8 @@
 // wasm-split: Split a module in two or instrument a module to inform future
 // splitting.
 
+#include <fstream>
+
 #include "ir/module-splitting.h"
 #include "ir/names.h"
 #include "support/file.h"
@@ -36,7 +38,7 @@ using namespace wasm;
 namespace {
 
 void parseInput(Module& wasm, const WasmSplitOptions& options) {
-  options.applyFeatures(wasm);
+  options.applyOptionsBeforeParse(wasm);
   ModuleReader reader;
   reader.setProfile(options.profile);
   try {
@@ -49,6 +51,8 @@ void parseInput(Module& wasm, const WasmSplitOptions& options) {
     Fatal() << "error building module, std::bad_alloc (possibly invalid "
                "request for silly amounts of memory)";
   }
+
+  options.applyOptionsAfterParse(wasm);
 
   if (options.passOptions.validate && !WasmValidator().validate(wasm)) {
     Fatal() << "error validating input";
@@ -65,11 +69,15 @@ uint64_t hashFile(const std::string& filename) {
   return uint64_t(digest);
 }
 
-void adjustTableSize(Module& wasm, int initialSize) {
+void adjustTableSize(Module& wasm, int initialSize, bool secondary = false) {
   if (initialSize < 0) {
     return;
   }
   if (wasm.tables.empty()) {
+    if (secondary) {
+      // It's not a problem if the table is not used in the secondary module.
+      return;
+    }
     Fatal() << "--initial-table used but there is no table";
   }
 
@@ -89,7 +97,7 @@ void adjustTableSize(Module& wasm, int initialSize) {
 void writeModule(Module& wasm,
                  std::string filename,
                  const WasmSplitOptions& options) {
-  ModuleWriter writer;
+  ModuleWriter writer(options.passOptions);
   writer.setBinary(options.emitBinary);
   writer.setDebugInfo(options.passOptions.debugInfo);
   if (options.emitModuleNames) {
@@ -108,8 +116,19 @@ void instrumentModule(const WasmSplitOptions& options) {
   }
 
   uint64_t moduleHash = hashFile(options.inputFiles[0]);
+  InstrumenterConfig config;
+  if (options.importNamespace.size()) {
+    config.importNamespace = options.importNamespace;
+  }
+  if (options.secondaryMemoryName.size()) {
+    config.secondaryMemoryName = options.secondaryMemoryName;
+  }
+  config.storageKind = options.storageKind;
+  config.profileExport = options.profileExport;
+
   PassRunner runner(&wasm, options.passOptions);
-  Instrumenter(options, moduleHash).run(&runner, &wasm);
+  runner.add(std::make_unique<Instrumenter>(config, moduleHash));
+  runner.run();
 
   adjustTableSize(wasm, options.initialTableSize);
 
@@ -149,11 +168,38 @@ ProfileData readProfile(const std::string& file) {
   return {hash, timestamps};
 }
 
+void getFunctionsToKeepAndSplit(Module& wasm,
+                                uint64_t wasmHash,
+                                const std::string& profileFile,
+                                std::set<Name>& keepFuncs,
+                                std::set<Name>& splitFuncs) {
+  ProfileData profile = readProfile(profileFile);
+  if (profile.hash != wasmHash) {
+    Fatal() << "error: checksum in profile does not match module checksum. "
+            << "The module to split must be the original, uninstrumented "
+               "module, not the module used to generate the profile.";
+  }
+
+  size_t i = 0;
+  ModuleUtils::iterDefinedFunctions(wasm, [&](Function* func) {
+    if (i >= profile.timestamps.size()) {
+      Fatal() << "Unexpected end of profile data";
+    }
+    if (profile.timestamps[i++] > 0) {
+      keepFuncs.insert(func->name);
+    } else {
+      splitFuncs.insert(func->name);
+    }
+  });
+  if (i != profile.timestamps.size()) {
+    Fatal() << "Unexpected extra profile data";
+  }
+}
+
 void writeSymbolMap(Module& wasm, std::string filename) {
   PassOptions options;
-  options.arguments["symbolmap"] = filename;
   PassRunner runner(&wasm, options);
-  runner.add("symbolmap");
+  runner.add("symbolmap", filename);
   runner.run();
 }
 
@@ -170,100 +216,110 @@ void splitModule(const WasmSplitOptions& options) {
   Module wasm;
   parseInput(wasm, options);
 
+  // All defined functions will be in one set or the other.
   std::set<Name> keepFuncs;
+  std::set<Name> splitFuncs;
 
   if (options.profileFile.size()) {
-    // Use the profile to set `keepFuncs`.
+    // Use the profile to set `keepFuncs` and `splitFuncs`.
     uint64_t hash = hashFile(options.inputFiles[0]);
-    ProfileData profile = readProfile(options.profileFile);
-    if (profile.hash != hash) {
-      Fatal() << "error: checksum in profile does not match module checksum. "
-              << "The split module must be the original module that was "
-              << "instrumented to generate the profile.";
+    getFunctionsToKeepAndSplit(
+      wasm, hash, options.profileFile, keepFuncs, splitFuncs);
+  } else {
+    // Normally the default is to keep each function, but if --keep-funcs is the
+    // only thing specified, then all other functions will be split.
+    bool defaultSplit = options.hasKeepFuncs && !options.hasSplitFuncs;
+    if (defaultSplit) {
+      ModuleUtils::iterDefinedFunctions(
+        wasm, [&](Function* func) { splitFuncs.insert(func->name); });
+    } else {
+      ModuleUtils::iterDefinedFunctions(
+        wasm, [&](Function* func) { keepFuncs.insert(func->name); });
     }
-    size_t i = 0;
-    ModuleUtils::iterDefinedFunctions(wasm, [&](Function* func) {
-      if (i >= profile.timestamps.size()) {
-        Fatal() << "Unexpected end of profile data";
-      }
-      if (profile.timestamps[i++] > 0) {
-        keepFuncs.insert(func->name);
-      }
-    });
-    if (i != profile.timestamps.size()) {
-      Fatal() << "Unexpected extra profile data";
-    }
-  } else if (options.keepFuncs.size()) {
-    // Use the explicitly provided `keepFuncs`.
-    for (auto& func : options.keepFuncs) {
-      if (!options.quiet && wasm.getFunctionOrNull(func) == nullptr) {
+  }
+
+  // Use the explicitly provided `keepFuncs`.
+  for (auto& func : options.keepFuncs) {
+    if (!wasm.getFunctionOrNull(func)) {
+      if (!options.quiet) {
         std::cerr << "warning: function " << func << " does not exist\n";
       }
-      keepFuncs.insert(func);
+      continue;
     }
-  } else if (options.splitFuncs.size()) {
-    // Use the explicitly provided `splitFuncs`.
-    for (auto& func : wasm.functions) {
-      keepFuncs.insert(func->name);
-    }
-    for (auto& func : options.splitFuncs) {
-      auto* function = wasm.getFunctionOrNull(func);
-      if (!options.quiet && function == nullptr) {
+    keepFuncs.insert(func);
+    splitFuncs.erase(func);
+  }
+
+  // Use the explicitly provided `splitFuncs`.
+  for (auto& func : options.splitFuncs) {
+    auto* function = wasm.getFunctionOrNull(func);
+    if (!function) {
+      if (!options.quiet) {
         std::cerr << "warning: function " << func << " does not exist\n";
       }
-      if (function && function->imported()) {
-        if (!options.quiet) {
-          std::cerr << "warning: cannot split out imported function " << func
-                    << "\n";
-        }
-      } else {
-        keepFuncs.erase(func);
-      }
+      continue;
     }
+    if (function->imported()) {
+      if (!options.quiet) {
+        std::cerr << "warning: cannot split out imported function " << func
+                  << "\n";
+      }
+      continue;
+    }
+    if (!options.quiet && options.keepFuncs.count(func)) {
+      std::cerr << "warning: function " << func
+                << " was to be both kept and split. It will be split.\n";
+    }
+    splitFuncs.insert(func);
+    keepFuncs.erase(func);
   }
 
   if (!options.quiet && keepFuncs.size() == 0) {
     std::cerr << "warning: not keeping any functions in the primary module\n";
   }
 
-  // If warnings are enabled, check that any functions are being split out.
-  if (!options.quiet) {
-    std::set<Name> splitFuncs;
-    ModuleUtils::iterDefinedFunctions(wasm, [&](Function* func) {
-      if (keepFuncs.count(func->name) == 0) {
-        splitFuncs.insert(func->name);
-      }
-    });
-
-    if (splitFuncs.size() == 0) {
-      std::cerr
-        << "warning: not splitting any functions out to the secondary module\n";
-    }
-
-    // Dump the kept and split functions if we are verbose
-    if (options.verbose) {
-      auto printCommaSeparated = [&](auto funcs) {
-        for (auto it = funcs.begin(); it != funcs.end(); ++it) {
-          if (it != funcs.begin()) {
-            std::cout << ", ";
-          }
-          std::cout << *it;
-        }
-      };
-
-      std::cout << "Keeping functions: ";
-      printCommaSeparated(keepFuncs);
-      std::cout << "\n";
-
-      std::cout << "Splitting out functions: ";
-      printCommaSeparated(splitFuncs);
-      std::cout << "\n";
-    }
+  if (options.jspi) {
+    // The load secondary module function must be kept in the main module.
+    keepFuncs.insert(ModuleSplitting::LOAD_SECONDARY_MODULE);
+    splitFuncs.erase(ModuleSplitting::LOAD_SECONDARY_MODULE);
   }
+
+  // If warnings are enabled, check that any functions are being split out.
+  if (!options.quiet && splitFuncs.size() == 0) {
+    std::cerr
+      << "warning: not splitting any functions out to the secondary module\n";
+  }
+
+  // Dump the kept and split functions if we are verbose.
+  if (options.verbose) {
+    auto printCommaSeparated = [&](auto funcs) {
+      for (auto it = funcs.begin(); it != funcs.end(); ++it) {
+        if (it != funcs.begin()) {
+          std::cout << ", ";
+        }
+        std::cout << *it;
+      }
+    };
+
+    std::cout << "Keeping functions: ";
+    printCommaSeparated(keepFuncs);
+    std::cout << "\n";
+
+    std::cout << "Splitting out functions: ";
+    printCommaSeparated(splitFuncs);
+    std::cout << "\n";
+  }
+
+#ifndef NDEBUG
+  // Check that all defined functions are in one set or the other.
+  ModuleUtils::iterDefinedFunctions(wasm, [&](Function* func) {
+    assert(keepFuncs.count(func->name) || splitFuncs.count(func->name));
+  });
+#endif // NDEBUG
 
   // Actually perform the splitting
   ModuleSplitting::Config config;
-  config.primaryFuncs = std::move(keepFuncs);
+  config.secondaryFuncs = std::move(splitFuncs);
   if (options.importNamespace.size()) {
     config.importNamespace = options.importNamespace;
   }
@@ -273,22 +329,14 @@ void splitModule(const WasmSplitOptions& options) {
   if (options.exportPrefix.size()) {
     config.newExportPrefix = options.exportPrefix;
   }
+  config.usePlaceholders = options.usePlaceholders;
   config.minimizeNewExportNames = !options.passOptions.debugInfo;
+  config.jspi = options.jspi;
   auto splitResults = ModuleSplitting::splitFunctions(wasm, config);
   auto& secondary = splitResults.secondary;
 
   adjustTableSize(wasm, options.initialTableSize);
-  adjustTableSize(*secondary, options.initialTableSize);
-
-  // Run asyncify on the primary module
-  if (options.asyncify) {
-    PassOptions passOptions;
-    passOptions.optimizeLevel = 1;
-    passOptions.arguments.insert({"asyncify-ignore-imports", ""});
-    PassRunner runner(&wasm, passOptions);
-    runner.add("asyncify");
-    runner.run();
-  }
+  adjustTableSize(*secondary, options.initialTableSize, /*secondary=*/true);
 
   if (options.symbolMap) {
     writeSymbolMap(wasm, options.primaryOutput + ".symbols");
@@ -312,6 +360,79 @@ void splitModule(const WasmSplitOptions& options) {
   // write the output modules
   writeModule(wasm, options.primaryOutput, options);
   writeModule(*secondary, options.secondaryOutput, options);
+}
+
+void multiSplitModule(const WasmSplitOptions& options) {
+  if (options.manifestFile.empty()) {
+    Fatal() << "--multi-split requires --manifest";
+  }
+  if (options.output.empty()) {
+    Fatal() << "--multi-split requires --output";
+  }
+
+  std::ifstream manifest(options.manifestFile);
+  if (!manifest.is_open()) {
+    Fatal() << "File not found: " << options.manifestFile;
+  }
+
+  Module wasm;
+  parseInput(wasm, options);
+
+  // Map module names to the functions that should be in the modules.
+  std::map<std::string, std::unordered_set<std::string>> moduleFuncs;
+  // The module for which we are currently parsing a set of functions.
+  std::string currModule;
+  // The set of functions we are currently inserting into.
+  std::unordered_set<std::string>* currFuncs = nullptr;
+  // Map functions to their modules to ensure no function is assigned to
+  // multiple modules.
+  std::unordered_map<std::string, std::string> funcModules;
+
+  std::string line;
+  bool newSection = true;
+  while (std::getline(manifest, line)) {
+    if (line.empty()) {
+      newSection = true;
+      continue;
+    }
+    if (newSection) {
+      currModule = line;
+      currFuncs = &moduleFuncs[line];
+      newSection = false;
+      continue;
+    }
+    assert(currFuncs);
+    currFuncs->insert(line);
+    auto [it, inserted] = funcModules.insert({line, currModule});
+    if (!inserted && it->second != currModule) {
+      Fatal() << "Function " << line << "cannot be assigned to module "
+              << currModule << "; it is already assigned to module "
+              << it->second << '\n';
+    }
+    if (inserted && !options.quiet && !wasm.getFunctionOrNull(line)) {
+      std::cerr << "warning: Function " << line << " does not exist\n";
+    }
+  }
+
+  ModuleSplitting::Config config;
+  config.usePlaceholders = false;
+  config.importNamespace = "";
+  config.minimizeNewExportNames = true;
+  for (auto& [mod, funcs] : moduleFuncs) {
+    if (options.verbose) {
+      std::cerr << "Splitting module " << mod << '\n';
+    }
+    if (!options.quiet && funcs.empty()) {
+      std::cerr << "warning: Module " << mod << " will be empty\n";
+    }
+    config.secondaryFuncs = std::set<Name>(funcs.begin(), funcs.end());
+    auto splitResults = ModuleSplitting::splitFunctions(wasm, config);
+    // TODO: symbolMap, placeholderMap, emitModuleNames
+    // TODO: Support --emit-text and use .wast in that case.
+    auto moduleName = options.outPrefix + mod + ".wasm";
+    writeModule(*splitResults.secondary, moduleName, options);
+  }
+  writeModule(wasm, options.output, options);
 }
 
 void mergeProfiles(const WasmSplitOptions& options) {
@@ -385,6 +506,62 @@ void mergeProfiles(const WasmSplitOptions& options) {
   buffer.writeTo(out.getStream());
 }
 
+std::string unescape(std::string input) {
+  std::string output;
+  for (size_t i = 0; i < input.length(); i++) {
+    if ((input[i] == '\\') && (i + 2 < input.length()) &&
+        isxdigit(input[i + 1]) && isxdigit(input[i + 2])) {
+      std::string byte = input.substr(i + 1, 2);
+      i += 2;
+      char chr = (char)(int)strtol(byte.c_str(), nullptr, 16);
+      output.push_back(chr);
+    } else {
+      output.push_back(input[i]);
+    }
+  }
+  return output;
+}
+
+void checkExists(const std::string& path) {
+  std::ifstream infile(path);
+  if (!infile.is_open()) {
+    Fatal() << "File not found: " << path;
+  }
+}
+
+void printReadableProfile(const WasmSplitOptions& options) {
+  const std::string wasmFile(options.inputFiles[0]);
+  checkExists(options.profileFile);
+  checkExists(wasmFile);
+
+  Module wasm;
+  parseInput(wasm, options);
+
+  std::set<Name> keepFuncs;
+  std::set<Name> splitFuncs;
+
+  uint64_t hash = hashFile(wasmFile);
+  getFunctionsToKeepAndSplit(
+    wasm, hash, options.profileFile, keepFuncs, splitFuncs);
+
+  auto printFnSet = [&](auto funcs, std::string prefix) {
+    for (auto it = funcs.begin(); it != funcs.end(); ++it) {
+      std::cout << prefix << " "
+                << (options.unescape ? unescape(it->toString())
+                                     : it->toString())
+                << std::endl;
+    }
+  };
+
+  std::cout << "Keeping functions: " << std::endl;
+  printFnSet(keepFuncs, "+");
+  std::cout << std::endl;
+
+  std::cout << "Splitting out functions: " << std::endl;
+  printFnSet(splitFuncs, "-");
+  std::cout << std::endl;
+}
+
 } // anonymous namespace
 
 int main(int argc, const char* argv[]) {
@@ -399,11 +576,17 @@ int main(int argc, const char* argv[]) {
     case WasmSplitOptions::Mode::Split:
       splitModule(options);
       break;
+    case WasmSplitOptions::Mode::MultiSplit:
+      multiSplitModule(options);
+      break;
     case WasmSplitOptions::Mode::Instrument:
       instrumentModule(options);
       break;
     case WasmSplitOptions::Mode::MergeProfiles:
       mergeProfiles(options);
+      break;
+    case WasmSplitOptions::Mode::PrintProfile:
+      printReadableProfile(options);
       break;
   }
 }

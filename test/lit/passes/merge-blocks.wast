@@ -8,22 +8,23 @@
 (module
  (type $anyref_=>_none (func (param anyref)))
 
+ ;; CHECK:      (type $array (array (mut i32)))
+
  ;; CHECK:      (type $struct (struct (field (mut i32))))
  (type $struct (struct (field (mut i32))))
 
- ;; CHECK:      (type $array (array (mut i32)))
  (type $array (array (mut i32)))
 
- ;; CHECK:      (func $br_on_to_drop
+ ;; CHECK:      (func $br_on_to_drop (type $4)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (drop
- ;; CHECK-NEXT:   (block $label$1 (result (ref null i31))
+ ;; CHECK-NEXT:   (block $label$1 (result i31ref)
  ;; CHECK-NEXT:    (drop
- ;; CHECK-NEXT:     (br_on_i31 $label$1
- ;; CHECK-NEXT:      (ref.null any)
+ ;; CHECK-NEXT:     (br_on_cast $label$1 nullref (ref none)
+ ;; CHECK-NEXT:      (ref.null none)
  ;; CHECK-NEXT:     )
  ;; CHECK-NEXT:    )
- ;; CHECK-NEXT:    (ref.null i31)
+ ;; CHECK-NEXT:    (ref.null none)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )
@@ -33,7 +34,7 @@
    (block $label$1 (result (ref null i31)) ;; this block type must stay, we
                                            ;; cannot remove it due to the br_on
     (drop
-     (br_on_i31 $label$1
+     (br_on_cast $label$1 anyref (ref i31)
       (ref.null any)
      )
     )
@@ -42,24 +43,24 @@
   )
  )
 
- ;; CHECK:      (func $struct.set
+ ;; CHECK:      (func $struct.set (type $5) (param $struct (ref null $struct))
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (i32.const 1234)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (struct.set $struct 0
- ;; CHECK-NEXT:   (ref.null $struct)
+ ;; CHECK-NEXT:   (local.get $struct)
  ;; CHECK-NEXT:   (i32.const 5)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
- (func $struct.set
+ (func $struct.set (param $struct (ref null $struct))
   (block
    (nop)
    (struct.set $struct 0
     (block (result (ref null $struct))
      (drop (i32.const 1234))
-     (ref.null $struct)
+     (local.get $struct)
     )
     (i32.const 5)
    )
@@ -67,26 +68,26 @@
   )
  )
 
- ;; CHECK:      (func $struct.get
+ ;; CHECK:      (func $struct.get (type $5) (param $struct (ref null $struct))
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (i32.const 1234)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (struct.get $struct 0
- ;; CHECK-NEXT:    (ref.null $struct)
+ ;; CHECK-NEXT:    (local.get $struct)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
- (func $struct.get
+ (func $struct.get (param $struct (ref null $struct))
   (block
    (nop)
    (drop
     (struct.get $struct 0
      (block (result (ref null $struct))
       (drop (i32.const 1234))
-      (ref.null $struct)
+      (local.get $struct)
      )
     )
    )
@@ -94,7 +95,7 @@
   )
  )
 
- ;; CHECK:      (func $array.set (param $foo (ref $array))
+ ;; CHECK:      (func $array.set (type $3) (param $foo (ref $array))
  ;; CHECK-NEXT:  (local $bar (ref null $array))
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (nop)
@@ -125,7 +126,7 @@
   )
  )
 
- ;; CHECK:      (func $array.set-no-1 (param $foo (ref $array))
+ ;; CHECK:      (func $array.set-no-1 (type $3) (param $foo (ref $array))
  ;; CHECK-NEXT:  (local $bar i32)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (nop)
@@ -155,7 +156,7 @@
   )
  )
 
- ;; CHECK:      (func $array.set-no-2 (param $foo (ref $array))
+ ;; CHECK:      (func $array.set-no-2 (type $3) (param $foo (ref $array))
  ;; CHECK-NEXT:  (local $bar i32)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT:  (nop)
@@ -185,19 +186,19 @@
   )
  )
 
- ;; CHECK:      (func $if-condition (result i32)
+ ;; CHECK:      (func $if-condition (type $6) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (i32.const 0)
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT:  (if (result i32)
  ;; CHECK-NEXT:   (i32.const 1)
- ;; CHECK-NEXT:   (block (result i32)
+ ;; CHECK-NEXT:   (then
  ;; CHECK-NEXT:    (drop
  ;; CHECK-NEXT:     (i32.const 2)
  ;; CHECK-NEXT:    )
  ;; CHECK-NEXT:    (i32.const 3)
  ;; CHECK-NEXT:   )
- ;; CHECK-NEXT:   (block (result i32)
+ ;; CHECK-NEXT:   (else
  ;; CHECK-NEXT:    (drop
  ;; CHECK-NEXT:     (i32.const 4)
  ;; CHECK-NEXT:    )
@@ -212,18 +213,22 @@
     (drop (i32.const 0))
     (i32.const 1)
    )
-   (block (result i32)
-    (drop (i32.const 2))
-    (i32.const 3)
+   (then
+    (block (result i32)
+     (drop (i32.const 2))
+     (i32.const 3)
+    )
    )
-   (block (result i32)
-    (drop (i32.const 4))
-    (i32.const 5)
+   (else
+    (block (result i32)
+     (drop (i32.const 4))
+     (i32.const 5)
+    )
    )
   )
  )
 
- ;; CHECK:      (func $subsequent-children (param $x i32) (param $y i32) (param $z i32) (result i32)
+ ;; CHECK:      (func $subsequent-children (type $1) (param $x i32) (param $y i32) (param $z i32) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $helper
  ;; CHECK-NEXT:    (i32.const 0)
@@ -258,7 +263,7 @@
   )
  )
 
- ;; CHECK:      (func $subsequent-children-1 (param $x i32) (param $y i32) (param $z i32) (result i32)
+ ;; CHECK:      (func $subsequent-children-1 (type $1) (param $x i32) (param $y i32) (param $z i32) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $helper
  ;; CHECK-NEXT:    (i32.const 0)
@@ -295,7 +300,7 @@
   )
  )
 
- ;; CHECK:      (func $subsequent-children-2 (param $x i32) (param $y i32) (param $z i32) (result i32)
+ ;; CHECK:      (func $subsequent-children-2 (type $1) (param $x i32) (param $y i32) (param $z i32) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (call $helper
  ;; CHECK-NEXT:    (i32.const 0)
@@ -333,7 +338,7 @@
   )
  )
 
- ;; CHECK:      (func $subsequent-children-3 (param $x i32) (param $y i32) (param $z i32) (result i32)
+ ;; CHECK:      (func $subsequent-children-3 (type $1) (param $x i32) (param $y i32) (param $z i32) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (i32.const 0)
  ;; CHECK-NEXT:  )
@@ -368,7 +373,7 @@
   )
  )
 
- ;; CHECK:      (func $subsequent-children-4 (param $x i32) (param $y i32) (param $z i32) (result i32)
+ ;; CHECK:      (func $subsequent-children-4 (type $1) (param $x i32) (param $y i32) (param $z i32) (result i32)
  ;; CHECK-NEXT:  (drop
  ;; CHECK-NEXT:   (i32.const 0)
  ;; CHECK-NEXT:  )
@@ -399,7 +404,27 @@
   )
  )
 
- ;; CHECK:      (func $helper (param $x i32) (result i32)
+ ;; CHECK:      (func $toplevel (type $4)
+ ;; CHECK-NEXT:  (block $label
+ ;; CHECK-NEXT:   (drop
+ ;; CHECK-NEXT:    (i32.const 42)
+ ;; CHECK-NEXT:   )
+ ;; CHECK-NEXT:   (br $label)
+ ;; CHECK-NEXT:  )
+ ;; CHECK-NEXT: )
+ (func $toplevel
+  ;; Test we can remove a block value even when the drop is at the toplevel of
+  ;; a function.
+  (drop
+   (block $label (result i32)
+    (br $label
+     (i32.const 42)
+    )
+   )
+  )
+ )
+
+ ;; CHECK:      (func $helper (type $7) (param $x i32) (result i32)
  ;; CHECK-NEXT:  (unreachable)
  ;; CHECK-NEXT: )
  (func $helper (param $x i32) (result i32)

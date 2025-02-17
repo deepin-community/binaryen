@@ -3,8 +3,14 @@ Upstream-Name: Binaryen
 Source: https://github.com/WebAssembly/binaryen
 
 Files: *
-Copyright: 2015-2022, WebAssembly Community Group participants
+Copyright: 2015-2025, WebAssembly Community Group participants
 License: Apache-2.0
+
+Files: third_party/FP16/*
+Copyright: 2017, Facebook Inc.
+ 2017, Georgia Institute of Technology
+ 2019, Google LLC
+License: Expat
 
 Files: third_party/llvm-project/*
 Copyright: LLVM project
@@ -27,7 +33,7 @@ License: Apache-2.0-with-LLVM-Exceptions
  Software.
 
 Files: debian/*
-Copyright: 2018-2022, Markus Koschany <apo@debian.org>
+Copyright: 2018-2023, Markus Koschany <apo@debian.org>
 License: Apache-2.0
 
 License: Apache-2.0

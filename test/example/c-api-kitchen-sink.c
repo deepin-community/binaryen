@@ -160,25 +160,25 @@ BinaryenExpressionRef makeMemoryInit(BinaryenModuleRef module) {
   BinaryenExpressionRef dest = makeInt32(module, 1024);
   BinaryenExpressionRef offset = makeInt32(module, 0);
   BinaryenExpressionRef size = makeInt32(module, 12);
-  return BinaryenMemoryInit(module, 0, dest, offset, size);
+  return BinaryenMemoryInit(module, "1", dest, offset, size, "0");
 };
 
 BinaryenExpressionRef makeDataDrop(BinaryenModuleRef module) {
-  return BinaryenDataDrop(module, 0);
+  return BinaryenDataDrop(module, "1");
 };
 
 BinaryenExpressionRef makeMemoryCopy(BinaryenModuleRef module) {
   BinaryenExpressionRef dest = makeInt32(module, 2048);
   BinaryenExpressionRef source = makeInt32(module, 1024);
   BinaryenExpressionRef size = makeInt32(module, 12);
-  return BinaryenMemoryCopy(module, dest, source, size);
+  return BinaryenMemoryCopy(module, dest, source, size, "0", "0");
 };
 
 BinaryenExpressionRef makeMemoryFill(BinaryenModuleRef module) {
   BinaryenExpressionRef dest = makeInt32(module, 0);
   BinaryenExpressionRef value = makeInt32(module, 42);
   BinaryenExpressionRef size = makeInt32(module, 1024);
-  return BinaryenMemoryFill(module, dest, value, size);
+  return BinaryenMemoryFill(module, dest, value, size, "0");
 };
 
 // tests
@@ -187,84 +187,121 @@ void test_types() {
   BinaryenType valueType = 0xdeadbeef;
 
   BinaryenType none = BinaryenTypeNone();
-  printf("  // BinaryenTypeNone: %d\n", none);
+  printf("BinaryenTypeNone: %zd\n", none);
   assert(BinaryenTypeArity(none) == 0);
   BinaryenTypeExpand(none, &valueType);
   assert(valueType == 0xdeadbeef);
 
   BinaryenType unreachable = BinaryenTypeUnreachable();
-  printf("  // BinaryenTypeUnreachable: %d\n", unreachable);
+  printf("BinaryenTypeUnreachable: %zd\n", unreachable);
   assert(BinaryenTypeArity(unreachable) == 1);
   BinaryenTypeExpand(unreachable, &valueType);
   assert(valueType == unreachable);
 
   BinaryenType i32 = BinaryenTypeInt32();
-  printf("  // BinaryenTypeInt32: %d\n", i32);
+  printf("BinaryenTypeInt32: %zd\n", i32);
   assert(BinaryenTypeArity(i32) == 1);
   BinaryenTypeExpand(i32, &valueType);
   assert(valueType == i32);
 
   BinaryenType i64 = BinaryenTypeInt64();
-  printf("  // BinaryenTypeInt64: %d\n", i64);
+  printf("BinaryenTypeInt64: %zd\n", i64);
   assert(BinaryenTypeArity(i64) == 1);
   BinaryenTypeExpand(i64, &valueType);
   assert(valueType == i64);
 
   BinaryenType f32 = BinaryenTypeFloat32();
-  printf("  // BinaryenTypeFloat32: %d\n", f32);
+  printf("BinaryenTypeFloat32: %zd\n", f32);
   assert(BinaryenTypeArity(f32) == 1);
   BinaryenTypeExpand(f32, &valueType);
   assert(valueType == f32);
 
   BinaryenType f64 = BinaryenTypeFloat64();
-  printf("  // BinaryenTypeFloat64: %d\n", f64);
+  printf("BinaryenTypeFloat64: %zd\n", f64);
   assert(BinaryenTypeArity(f64) == 1);
   BinaryenTypeExpand(f64, &valueType);
   assert(valueType == f64);
 
   BinaryenType v128 = BinaryenTypeVec128();
-  printf("  // BinaryenTypeVec128: %d\n", v128);
+  printf("BinaryenTypeVec128: %zd\n", v128);
   assert(BinaryenTypeArity(v128) == 1);
   BinaryenTypeExpand(v128, &valueType);
   assert(valueType == v128);
 
   BinaryenType funcref = BinaryenTypeFuncref();
-  printf("  // BinaryenTypeFuncref: %d\n", funcref);
+  printf("BinaryenTypeFuncref: (ptr)\n");
+  assert(funcref == BinaryenTypeFuncref());
   assert(BinaryenTypeArity(funcref) == 1);
   BinaryenTypeExpand(funcref, &valueType);
   assert(valueType == funcref);
 
   BinaryenType externref = BinaryenTypeExternref();
-  printf("  // BinaryenTypeExternref: %d\n", externref);
+  printf("BinaryenTypeExternref: (ptr)\n");
+  assert(externref == BinaryenTypeExternref());
   assert(BinaryenTypeArity(externref) == 1);
   BinaryenTypeExpand(externref, &valueType);
   assert(valueType == externref);
 
   BinaryenType anyref = BinaryenTypeAnyref();
-  printf("  // BinaryenTypeAnyref: %d\n", anyref);
+  printf("BinaryenTypeAnyref: (ptr)\n");
+  assert(anyref == BinaryenTypeAnyref());
   assert(BinaryenTypeArity(anyref) == 1);
   BinaryenTypeExpand(anyref, &valueType);
   assert(valueType == anyref);
 
   BinaryenType eqref = BinaryenTypeEqref();
-  printf("  // BinaryenTypeEqref: %d\n", eqref);
+  printf("BinaryenTypeEqref: (ptr)\n");
+  assert(eqref == BinaryenTypeEqref());
   assert(BinaryenTypeArity(eqref) == 1);
   BinaryenTypeExpand(eqref, &valueType);
   assert(valueType == eqref);
 
   BinaryenType i31ref = BinaryenTypeI31ref();
-  printf("  // BinaryenTypeI31ref: %d\n", i31ref);
+  printf("BinaryenTypeI31ref: (ptr)\n");
+  assert(i31ref == BinaryenTypeI31ref());
   assert(BinaryenTypeArity(i31ref) == 1);
   BinaryenTypeExpand(i31ref, &valueType);
   assert(valueType == i31ref);
 
-  BinaryenType dataref = BinaryenTypeDataref();
-  printf("  // BinaryenTypeDataref: %d\n", dataref);
-  assert(BinaryenTypeArity(dataref) == 1);
-  BinaryenTypeExpand(dataref, &valueType);
-  assert(valueType == dataref);
+  BinaryenType structref = BinaryenTypeStructref();
+  printf("BinaryenTypeStructref: (ptr)\n");
+  assert(structref == BinaryenTypeStructref());
+  assert(BinaryenTypeArity(structref) == 1);
+  BinaryenTypeExpand(structref, &valueType);
+  assert(valueType == structref);
 
-  printf("  // BinaryenTypeAuto: %d\n", BinaryenTypeAuto());
+  BinaryenType arrayref = BinaryenTypeArrayref();
+  printf("BinaryenTypeArrayref: (ptr)\n");
+  assert(arrayref == BinaryenTypeArrayref());
+  assert(BinaryenTypeArity(arrayref) == 1);
+  BinaryenTypeExpand(arrayref, &valueType);
+  assert(valueType == arrayref);
+
+  BinaryenType stringref = BinaryenTypeStringref();
+  printf("BinaryenTypeStringref: (ptr)\n");
+  assert(BinaryenTypeArity(stringref) == 1);
+  BinaryenTypeExpand(stringref, &valueType);
+  assert(valueType == stringref);
+
+  BinaryenType nullref = BinaryenTypeNullref();
+  printf("BinaryenTypeNullref: (ptr)\n");
+  assert(BinaryenTypeArity(nullref) == 1);
+  BinaryenTypeExpand(nullref, &valueType);
+  assert(valueType == nullref);
+
+  BinaryenType nullexternref = BinaryenTypeNullExternref();
+  printf("BinaryenTypeNullExternref: (ptr)\n");
+  assert(BinaryenTypeArity(nullexternref) == 1);
+  BinaryenTypeExpand(nullexternref, &valueType);
+  assert(valueType == nullexternref);
+
+  BinaryenType nullfuncref = BinaryenTypeNullFuncref();
+  printf("BinaryenTypeNullFuncref: (ptr)\n");
+  assert(BinaryenTypeArity(nullfuncref) == 1);
+  BinaryenTypeExpand(nullfuncref, &valueType);
+  assert(valueType == nullfuncref);
+
+  printf("BinaryenTypeAuto: %zd\n", BinaryenTypeAuto());
 
   BinaryenType pair[] = {i32, i32};
 
@@ -280,6 +317,40 @@ void test_types() {
   pair[0] = pair[1] = f32;
   BinaryenType float_pair = BinaryenTypeCreate(pair, 2);
   assert(float_pair != i32_pair);
+
+  BinaryenPackedType notPacked = BinaryenPackedTypeNotPacked();
+  printf("BinaryenPackedTypeNotPacked: %d\n", notPacked);
+  BinaryenPackedType i8 = BinaryenPackedTypeInt8();
+  printf("BinaryenPackedTypeInt8: %d\n", i8);
+  BinaryenPackedType i16 = BinaryenPackedTypeInt16();
+  printf("BinaryenPackedTypeInt16: %d\n", i16);
+
+  printf("BinaryenHeapTypeExt: %zd\n", BinaryenHeapTypeExt());
+  printf("BinaryenHeapTypeFunc: %zd\n", BinaryenHeapTypeFunc());
+  printf("BinaryenHeapTypeAny: %zd\n", BinaryenHeapTypeAny());
+  printf("BinaryenHeapTypeEq: %zd\n", BinaryenHeapTypeEq());
+  printf("BinaryenHeapTypeI31: %zd\n", BinaryenHeapTypeI31());
+  printf("BinaryenHeapTypeStruct: %zd\n", BinaryenHeapTypeStruct());
+  printf("BinaryenHeapTypeArray: %zd\n", BinaryenHeapTypeArray());
+  printf("BinaryenHeapTypeString: %zd\n", BinaryenHeapTypeString());
+  printf("BinaryenHeapTypeNone: %zd\n", BinaryenHeapTypeNone());
+  printf("BinaryenHeapTypeNoext: %zd\n", BinaryenHeapTypeNoext());
+  printf("BinaryenHeapTypeNofunc: %zd\n", BinaryenHeapTypeNofunc());
+
+  assert(!BinaryenHeapTypeIsBottom(BinaryenHeapTypeExt()));
+  assert(BinaryenHeapTypeIsBottom(BinaryenHeapTypeNoext()));
+  assert(BinaryenHeapTypeGetBottom(BinaryenHeapTypeExt()) ==
+         BinaryenHeapTypeNoext());
+
+  BinaryenHeapType eq = BinaryenTypeGetHeapType(eqref);
+  assert(eq == BinaryenHeapTypeEq());
+  BinaryenType ref_null_eq = BinaryenTypeFromHeapType(eq, true);
+  assert(BinaryenTypeGetHeapType(ref_null_eq) == eq);
+  assert(BinaryenTypeIsNullable(ref_null_eq));
+  BinaryenType ref_eq = BinaryenTypeFromHeapType(eq, false);
+  assert(ref_eq != ref_null_eq);
+  assert(BinaryenTypeGetHeapType(ref_eq) == eq);
+  assert(!BinaryenTypeIsNullable(ref_eq));
 }
 
 void test_features() {
@@ -300,11 +371,36 @@ void test_features() {
   printf("BinaryenFeatureMultivalue: %d\n", BinaryenFeatureMultivalue());
   printf("BinaryenFeatureGC: %d\n", BinaryenFeatureGC());
   printf("BinaryenFeatureMemory64: %d\n", BinaryenFeatureMemory64());
-  printf("BinaryenFeatureTypedFunctionReferences: %d\n",
-         BinaryenFeatureTypedFunctionReferences());
   printf("BinaryenFeatureRelaxedSIMD: %d\n", BinaryenFeatureRelaxedSIMD());
   printf("BinaryenFeatureExtendedConst: %d\n", BinaryenFeatureExtendedConst());
+  printf("BinaryenFeatureStrings: %d\n", BinaryenFeatureStrings());
   printf("BinaryenFeatureAll: %d\n", BinaryenFeatureAll());
+}
+
+void test_read_with_feature() {
+  BinaryenModuleRef module = BinaryenModuleCreate();
+  // Having multiple tables makes this module inherently not MVP compatible
+  // and requires the externref feature enabled to parse successfully.
+  BinaryenAddTable(module, "tab", 0, 100, BinaryenTypeFuncref());
+  BinaryenAddTable(module, "tab2", 0, 100, BinaryenTypeFuncref());
+
+  BinaryenFeatures features =
+    BinaryenFeatureMVP() | BinaryenFeatureReferenceTypes();
+  BinaryenModuleSetFeatures(module, features);
+
+  size_t bufferSize = 1024;
+  char* buffer = malloc(bufferSize);
+  size_t written = BinaryenModuleWrite(module, buffer, bufferSize);
+  BinaryenModuleDispose(module);
+
+  // See we can read the bytes and get a valid module from there.
+  BinaryenModuleRef readModule =
+    BinaryenModuleReadWithFeatures(buffer, written, features);
+  int valid = BinaryenModuleValidate(readModule);
+  assert(valid);
+  BinaryenModuleDispose(readModule);
+
+  free(buffer);
 }
 
 void test_core() {
@@ -371,13 +467,13 @@ void test_core() {
                         temp15 = makeInt32(module, 110),
                         temp16 = makeInt64(module, 111);
   BinaryenExpressionRef externrefExpr =
-    BinaryenRefNull(module, BinaryenTypeExternref());
+    BinaryenRefNull(module, BinaryenTypeNullExternref());
   BinaryenExpressionRef funcrefExpr =
-    BinaryenRefNull(module, BinaryenTypeFuncref());
+    BinaryenRefNull(module, BinaryenTypeNullFuncref());
   funcrefExpr =
     BinaryenRefFunc(module, "kitchen()sinker", BinaryenTypeFuncref());
   BinaryenExpressionRef i31refExpr =
-    BinaryenI31New(module, makeInt32(module, 1));
+    BinaryenRefI31(module, makeInt32(module, 1));
 
   // Tags
   BinaryenAddTag(module, "a-tag", BinaryenTypeInt32(), BinaryenTypeNone());
@@ -411,6 +507,58 @@ void test_core() {
   BinaryenType f32 = BinaryenTypeFloat32();
   BinaryenType f64 = BinaryenTypeFloat64();
   BinaryenType v128 = BinaryenTypeVec128();
+  BinaryenType i8Array;
+  BinaryenType i16Array;
+  BinaryenType i32Struct;
+  {
+    TypeBuilderRef tb = TypeBuilderCreate(3);
+    TypeBuilderSetArrayType(
+      tb, 0, BinaryenTypeInt32(), BinaryenPackedTypeInt8(), true);
+    TypeBuilderSetArrayType(
+      tb, 1, BinaryenTypeInt32(), BinaryenPackedTypeInt16(), true);
+    TypeBuilderSetStructType(
+      tb,
+      2,
+      (BinaryenType[]){BinaryenTypeInt32()},
+      (BinaryenPackedType[]){BinaryenPackedTypeNotPacked()},
+      (bool[]){true},
+      1);
+    BinaryenHeapType builtHeapTypes[3];
+    TypeBuilderBuildAndDispose(tb, (BinaryenHeapType*)&builtHeapTypes, 0, 0);
+    i8Array = BinaryenTypeFromHeapType(builtHeapTypes[0], true);
+    i16Array = BinaryenTypeFromHeapType(builtHeapTypes[1], true);
+    i32Struct = BinaryenTypeFromHeapType(builtHeapTypes[2], true);
+  }
+
+  // Memory. Add it before creating any memory-using instructions.
+
+  const char* segmentNames[] = {"0", "1"};
+  const char* segmentDatas[] = {"hello, world", "I am passive"};
+  bool segmentPassives[] = {false, true};
+  BinaryenExpressionRef segmentOffsets[] = {
+    BinaryenConst(module, BinaryenLiteralInt32(10)), NULL};
+  BinaryenIndex segmentSizes[] = {12, 12};
+  BinaryenSetMemory(module,
+                    1,
+                    256,
+                    "mem",
+                    segmentNames,
+                    segmentDatas,
+                    segmentPassives,
+                    segmentOffsets,
+                    segmentSizes,
+                    2,
+                    1,
+                    0,
+                    "0");
+  BinaryenAddDataSegment(module, NULL, NULL, true, NULL, "data segment 2", 14);
+  BinaryenAddDataSegment(module,
+                         "seg",
+                         "0",
+                         false,
+                         BinaryenConst(module, BinaryenLiteralInt32(0)),
+                         "data segment 3",
+                         14);
 
   BinaryenExpressionRef valueList[] = {
     // Unary
@@ -511,6 +659,10 @@ void test_core() {
     makeUnary(module, BinaryenTruncSatZeroUVecF64x2ToVecI32x4(), v128),
     makeUnary(module, BinaryenDemoteZeroVecF64x2ToVecF32x4(), v128),
     makeUnary(module, BinaryenPromoteLowVecF32x4ToVecF64x2(), v128),
+    makeUnary(module, BinaryenRelaxedTruncSVecF32x4ToVecI32x4(), v128),
+    makeUnary(module, BinaryenRelaxedTruncUVecF32x4ToVecI32x4(), v128),
+    makeUnary(module, BinaryenRelaxedTruncZeroSVecF64x2ToVecI32x4(), v128),
+    makeUnary(module, BinaryenRelaxedTruncZeroUVecF64x2ToVecI32x4(), v128),
     // Binary
     makeBinary(module, BinaryenAddInt32(), i32),
     makeBinary(module, BinaryenSubFloat64(), f64),
@@ -676,6 +828,13 @@ void test_core() {
     makeBinary(module, BinaryenNarrowSVecI32x4ToVecI16x8(), v128),
     makeBinary(module, BinaryenNarrowUVecI32x4ToVecI16x8(), v128),
     makeBinary(module, BinaryenSwizzleVecI8x16(), v128),
+    makeBinary(module, BinaryenRelaxedSwizzleVecI8x16(), v128),
+    makeBinary(module, BinaryenRelaxedMinVecF32x4(), v128),
+    makeBinary(module, BinaryenRelaxedMaxVecF32x4(), v128),
+    makeBinary(module, BinaryenRelaxedMinVecF64x2(), v128),
+    makeBinary(module, BinaryenRelaxedMaxVecF64x2(), v128),
+    makeBinary(module, BinaryenRelaxedQ15MulrSVecI16x8(), v128),
+    makeBinary(module, BinaryenDotI8x16I7x16SToVecI16x8(), v128),
     // SIMD lane manipulation
     makeSIMDExtract(module, BinaryenExtractLaneSVecI8x16()),
     makeSIMDExtract(module, BinaryenExtractLaneUVecI8x16()),
@@ -706,29 +865,29 @@ void test_core() {
     makeSIMDShift(module, BinaryenShrUVecI64x2()),
     // SIMD load
     BinaryenSIMDLoad(
-      module, BinaryenLoad8SplatVec128(), 0, 1, makeInt32(module, 128)),
+      module, BinaryenLoad8SplatVec128(), 0, 1, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad16SplatVec128(), 16, 1, makeInt32(module, 128)),
+      module, BinaryenLoad16SplatVec128(), 16, 1, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad32SplatVec128(), 16, 4, makeInt32(module, 128)),
+      module, BinaryenLoad32SplatVec128(), 16, 4, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad64SplatVec128(), 0, 4, makeInt32(module, 128)),
+      module, BinaryenLoad64SplatVec128(), 0, 4, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad8x8SVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad8x8SVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad8x8UVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad8x8UVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad16x4SVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad16x4SVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad16x4UVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad16x4UVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad32x2SVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad32x2SVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad32x2UVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad32x2UVec128(), 0, 8, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad32ZeroVec128(), 0, 4, makeInt32(module, 128)),
+      module, BinaryenLoad32ZeroVec128(), 0, 4, makeInt32(module, 128), "0"),
     BinaryenSIMDLoad(
-      module, BinaryenLoad64ZeroVec128(), 0, 8, makeInt32(module, 128)),
+      module, BinaryenLoad64ZeroVec128(), 0, 8, makeInt32(module, 128), "0"),
     // SIMD load/store lane
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenLoad8LaneVec128(),
@@ -736,60 +895,76 @@ void test_core() {
                               1,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenLoad16LaneVec128(),
                               0,
                               2,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenLoad32LaneVec128(),
                               0,
                               4,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenLoad64LaneVec128(),
                               0,
                               8,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
-
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenStore8LaneVec128(),
                               0,
                               1,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenStore16LaneVec128(),
                               0,
                               2,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenStore32LaneVec128(),
                               0,
                               4,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     BinaryenSIMDLoadStoreLane(module,
                               BinaryenStore64LaneVec128(),
                               0,
                               8,
                               0,
                               makeInt32(module, 128),
-                              makeVec128(module, v128_bytes)),
+                              makeVec128(module, v128_bytes),
+                              "0"),
     // Other SIMD
     makeSIMDShuffle(module),
     makeSIMDTernary(module, BinaryenBitselectVec128()),
+    makeSIMDTernary(module, BinaryenRelaxedMaddVecF32x4()),
+    makeSIMDTernary(module, BinaryenRelaxedNmaddVecF32x4()),
+    makeSIMDTernary(module, BinaryenRelaxedMaddVecF64x2()),
+    makeSIMDTernary(module, BinaryenRelaxedNmaddVecF64x2()),
+    makeSIMDTernary(module, BinaryenLaneselectI8x16()),
+    makeSIMDTernary(module, BinaryenLaneselectI16x8()),
+    makeSIMDTernary(module, BinaryenLaneselectI32x4()),
+    makeSIMDTernary(module, BinaryenLaneselectI64x2()),
+    makeSIMDTernary(module, BinaryenDotI8x16I7x16AddSToVecI32x4()),
     // Bulk memory
     makeMemoryInit(module),
     makeDataDrop(module),
@@ -836,14 +1011,16 @@ void test_core() {
     BinaryenDrop(
       module,
       BinaryenLocalTee(module, 0, makeInt32(module, 102), BinaryenTypeInt32())),
-    BinaryenLoad(module, 4, 0, 0, 0, BinaryenTypeInt32(), makeInt32(module, 1)),
-    BinaryenLoad(module, 2, 1, 2, 1, BinaryenTypeInt64(), makeInt32(module, 8)),
     BinaryenLoad(
-      module, 4, 0, 0, 0, BinaryenTypeFloat32(), makeInt32(module, 2)),
+      module, 4, 0, 0, 0, BinaryenTypeInt32(), makeInt32(module, 1), "0"),
     BinaryenLoad(
-      module, 8, 0, 2, 8, BinaryenTypeFloat64(), makeInt32(module, 9)),
-    BinaryenStore(module, 4, 0, 0, temp13, temp14, BinaryenTypeInt32()),
-    BinaryenStore(module, 8, 2, 4, temp15, temp16, BinaryenTypeInt64()),
+      module, 2, 1, 2, 1, BinaryenTypeInt64(), makeInt32(module, 8), "0"),
+    BinaryenLoad(
+      module, 4, 0, 0, 0, BinaryenTypeFloat32(), makeInt32(module, 2), "0"),
+    BinaryenLoad(
+      module, 8, 0, 2, 8, BinaryenTypeFloat64(), makeInt32(module, 9), "0"),
+    BinaryenStore(module, 4, 0, 0, temp13, temp14, BinaryenTypeInt32(), "0"),
+    BinaryenStore(module, 8, 2, 4, temp15, temp16, BinaryenTypeInt64(), "0"),
     BinaryenSelect(module, temp10, temp11, temp12, BinaryenTypeAuto()),
     BinaryenReturn(module, makeInt32(module, 1337)),
     // Tail call
@@ -857,39 +1034,27 @@ void test_core() {
                                iIfF,
                                BinaryenTypeInt32()),
     // Reference types
-    BinaryenRefIs(module, BinaryenRefIsNull(), externrefExpr),
-    BinaryenRefIs(module, BinaryenRefIsNull(), funcrefExpr),
+    BinaryenRefIsNull(module, externrefExpr),
+    BinaryenRefIsNull(module, funcrefExpr),
     BinaryenSelect(
       module,
       temp10,
-      BinaryenRefNull(module, BinaryenTypeFuncref()),
+      BinaryenRefNull(module, BinaryenTypeNullFuncref()),
       BinaryenRefFunc(module, "kitchen()sinker", BinaryenTypeFuncref()),
       BinaryenTypeFuncref()),
     // GC
     BinaryenRefEq(module,
-                  BinaryenRefNull(module, BinaryenTypeEqref()),
-                  BinaryenRefNull(module, BinaryenTypeEqref())),
-    BinaryenRefIs(module,
-                  BinaryenRefIsFunc(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
-    BinaryenRefIs(module,
-                  BinaryenRefIsData(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
-    BinaryenRefIs(module,
-                  BinaryenRefIsI31(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
+                  BinaryenRefNull(module, BinaryenTypeNullref()),
+                  BinaryenRefNull(module, BinaryenTypeNullref())),
     BinaryenRefAs(module,
                   BinaryenRefAsNonNull(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
+                  BinaryenRefNull(module, BinaryenTypeNullref())),
     BinaryenRefAs(module,
-                  BinaryenRefAsFunc(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
+                  BinaryenRefAsAnyConvertExtern(),
+                  BinaryenRefNull(module, BinaryenTypeNullExternref())),
     BinaryenRefAs(module,
-                  BinaryenRefAsData(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
-    BinaryenRefAs(module,
-                  BinaryenRefAsI31(),
-                  BinaryenRefNull(module, BinaryenTypeAnyref())),
+                  BinaryenRefAsExternConvertAny(),
+                  BinaryenRefNull(module, BinaryenTypeNullref())),
     // Exception handling
     BinaryenTry(module, NULL, tryBody, catchTags, 1, catchBodies, 2, NULL),
     // (try $try_outer
@@ -924,12 +1089,13 @@ void test_core() {
       4,
       0,
       temp6,
-      BinaryenAtomicLoad(module, 4, 0, BinaryenTypeInt32(), temp6),
-      BinaryenTypeInt32()),
-    BinaryenDrop(
-      module,
-      BinaryenAtomicWait(module, temp6, temp6, temp16, BinaryenTypeInt32())),
-    BinaryenDrop(module, BinaryenAtomicNotify(module, temp6, temp6)),
+      BinaryenAtomicLoad(module, 4, 0, BinaryenTypeInt32(), temp6, "0"),
+      BinaryenTypeInt32(),
+      "0"),
+    BinaryenDrop(module,
+                 BinaryenAtomicWait(
+                   module, temp6, temp6, temp16, BinaryenTypeInt32(), "0")),
+    BinaryenDrop(module, BinaryenAtomicNotify(module, temp6, temp6, "0")),
     BinaryenAtomicFence(module),
     // Tuples
     BinaryenTupleMake(module, tupleElements4a, 4),
@@ -944,12 +1110,121 @@ void test_core() {
     BinaryenPop(module, BinaryenTypeExternref()),
     BinaryenPop(module, iIfF),
     // Memory
-    BinaryenMemorySize(module),
-    BinaryenMemoryGrow(module, makeInt32(module, 0)),
+    BinaryenMemorySize(module, "0", false),
+    BinaryenMemoryGrow(module, makeInt32(module, 0), "0", false),
     // GC
-    BinaryenI31New(module, makeInt32(module, 0)),
+    BinaryenRefI31(module, makeInt32(module, 0)),
     BinaryenI31Get(module, i31refExpr, 1),
-    BinaryenI31Get(module, BinaryenI31New(module, makeInt32(module, 2)), 0),
+    BinaryenI31Get(module, BinaryenRefI31(module, makeInt32(module, 2)), 0),
+    BinaryenRefTest(
+      module, BinaryenGlobalGet(module, "i8Array-global", i8Array), i8Array),
+    BinaryenRefCast(
+      module, BinaryenGlobalGet(module, "i8Array-global", i8Array), i8Array),
+    BinaryenStructNew(module, 0, 0, BinaryenTypeGetHeapType(i32Struct)),
+    BinaryenStructNew(module,
+                      (BinaryenExpressionRef[]){makeInt32(module, 0)},
+                      1,
+                      BinaryenTypeGetHeapType(i32Struct)),
+    BinaryenStructGet(module,
+                      0,
+                      BinaryenGlobalGet(module, "i32Struct-global", i32Struct),
+                      BinaryenTypeInt32(),
+                      false),
+    BinaryenStructSet(module,
+                      0,
+                      BinaryenGlobalGet(module, "i32Struct-global", i32Struct),
+                      makeInt32(module, 0)),
+    BinaryenArrayNew(
+      module, BinaryenTypeGetHeapType(i8Array), makeInt32(module, 3), 0),
+    BinaryenArrayNew(module,
+                     BinaryenTypeGetHeapType(i8Array),
+                     makeInt32(module, 3),
+                     makeInt32(module, 42)),
+    BinaryenArrayNewData(module,
+                         BinaryenTypeGetHeapType(i8Array),
+                         "0",
+                         makeInt32(module, 0),
+                         makeInt32(module, 2)),
+    BinaryenArrayNewFixed(module,
+                          BinaryenTypeGetHeapType(i8Array),
+                          (BinaryenExpressionRef[]){makeInt32(module, 1),
+                                                    makeInt32(module, 2),
+                                                    makeInt32(module, 3)},
+                          3),
+    BinaryenArrayGet(module,
+                     BinaryenGlobalGet(module, "i8Array-global", i8Array),
+                     makeInt32(module, 0),
+                     BinaryenTypeInt32(),
+                     true),
+    BinaryenArraySet(module,
+                     BinaryenGlobalGet(module, "i8Array-global", i8Array),
+                     makeInt32(module, 0),
+                     makeInt32(module, 42)),
+    BinaryenArrayLen(module,
+                     BinaryenGlobalGet(module, "i8Array-global", i8Array)),
+    BinaryenArrayCopy(module,
+                      BinaryenGlobalGet(module, "i8Array-global", i8Array),
+                      makeInt32(module, 0),
+                      BinaryenGlobalGet(module, "i8Array-global", i8Array),
+                      makeInt32(module, 1),
+                      makeInt32(module, 2)),
+    // Strings
+    BinaryenStringNew(module,
+                      BinaryenStringNewLossyUTF8Array(),
+                      BinaryenGlobalGet(module, "i8Array-global", i8Array),
+                      makeInt32(module, 0),
+                      makeInt32(module, 0)),
+    BinaryenStringNew(module,
+                      BinaryenStringNewWTF16Array(),
+                      BinaryenGlobalGet(module, "i16Array-global", i16Array),
+                      makeInt32(module, 0),
+                      makeInt32(module, 0)),
+    BinaryenStringNew(
+      module, BinaryenStringNewFromCodePoint(), makeInt32(module, 1), 0, 0),
+    BinaryenStringConst(module, "hello world"),
+    BinaryenStringMeasure(
+      module,
+      BinaryenStringMeasureUTF8(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref())),
+    BinaryenStringMeasure(
+      module,
+      BinaryenStringMeasureWTF16(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref())),
+    BinaryenStringEncode(
+      module,
+      BinaryenStringEncodeLossyUTF8Array(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      BinaryenGlobalGet(module, "i8Array-global", i8Array),
+      makeInt32(module, 0)),
+    BinaryenStringEncode(
+      module,
+      BinaryenStringEncodeWTF16Array(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      BinaryenGlobalGet(module, "i16Array-global", i16Array),
+      makeInt32(module, 0)),
+    BinaryenStringConcat(
+      module,
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref())),
+    BinaryenStringEq(
+      module,
+      BinaryenStringEqEqual(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref())),
+    BinaryenStringEq(
+      module,
+      BinaryenStringEqCompare(),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref())),
+    BinaryenStringWTF16Get(
+      module,
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      makeInt32(module, 0)),
+    BinaryenStringSliceWTF(
+      module,
+      BinaryenGlobalGet(module, "string-global", BinaryenTypeStringref()),
+      makeInt32(module, 0),
+      makeInt32(module, 0)),
     // Other
     BinaryenNop(module),
     BinaryenUnreachable(module),
@@ -978,6 +1253,16 @@ void test_core() {
   BinaryenFunctionRef sinker = BinaryenAddFunction(
     module, "kitchen()sinker", iIfF, BinaryenTypeInt32(), localTypes, 2, body);
 
+  BinaryenIndex numLocals = BinaryenFunctionGetNumLocals(sinker);
+  BinaryenIndex numParams =
+    BinaryenTypeArity(BinaryenFunctionGetParams(sinker));
+  BinaryenIndex newLocalIdx =
+    BinaryenFunctionAddVar(sinker, BinaryenTypeFloat32());
+  assert(newLocalIdx == numLocals);
+  assert(BinaryenFunctionGetNumLocals(sinker) == numLocals + 1);
+  assert(BinaryenFunctionGetVar(sinker, newLocalIdx - numParams) ==
+         BinaryenTypeFloat32());
+
   // Globals
 
   BinaryenAddGlobal(
@@ -987,6 +1272,31 @@ void test_core() {
                     BinaryenTypeFloat32(),
                     1,
                     makeFloat32(module, 7.5));
+  BinaryenAddGlobal(
+    module,
+    "i8Array-global",
+    i8Array,
+    true,
+    BinaryenArrayNew(
+      module, BinaryenTypeGetHeapType(i8Array), makeInt32(module, 0), 0));
+  BinaryenAddGlobal(
+    module,
+    "i16Array-global",
+    i16Array,
+    true,
+    BinaryenArrayNew(
+      module, BinaryenTypeGetHeapType(i16Array), makeInt32(module, 0), 0));
+  BinaryenAddGlobal(
+    module,
+    "i32Struct-global",
+    i32Struct,
+    true,
+    BinaryenStructNew(module, 0, 0, BinaryenTypeGetHeapType(i32Struct)));
+  BinaryenAddGlobal(module,
+                    "string-global",
+                    BinaryenTypeStringref(),
+                    true,
+                    BinaryenStringConst(module, ""));
 
   // Imports
 
@@ -1034,29 +1344,11 @@ void test_core() {
   BinaryenTableSizeSetTable(tablesize, table);
 
   BinaryenExpressionRef valueExpr =
-    BinaryenRefNull(module, BinaryenTypeFuncref());
+    BinaryenRefNull(module, BinaryenTypeNullFuncref());
   BinaryenExpressionRef sizeExpr = makeInt32(module, 0);
   BinaryenExpressionRef growExpr =
     BinaryenTableGrow(module, "0", valueExpr, sizeExpr);
   BinaryenExpressionPrint(growExpr);
-
-  // Memory. One per module
-
-  const char* segments[] = {"hello, world", "I am passive"};
-  bool segmentPassive[] = {false, true};
-  BinaryenExpressionRef segmentOffsets[] = {
-    BinaryenConst(module, BinaryenLiteralInt32(10)), NULL};
-  BinaryenIndex segmentSizes[] = {12, 12};
-  BinaryenSetMemory(module,
-                    1,
-                    256,
-                    "mem",
-                    segments,
-                    segmentPassive,
-                    segmentOffsets,
-                    segmentSizes,
-                    2,
-                    1);
 
   // Start function. One per module
 
@@ -1080,10 +1372,28 @@ void test_core() {
   BinaryenModulePrint(module);
 
   // Verify it validates
-  assert(BinaryenModuleValidate(module));
+  int valid = BinaryenModuleValidate(module);
+  assert(valid);
+
+  // Verify no error occurs when writing out the code to binary.
+  size_t bufferSize = 10 * 1024 * 1024;
+  char* buffer = malloc(bufferSize);
+  size_t written = BinaryenModuleWrite(module, buffer, bufferSize);
+  // We wrote bytes, and we did not reach the end of the buffer (which would
+  // truncate).
+  assert(written > 0 && written < bufferSize);
 
   // Clean up the module, which owns all the objects we created above
   BinaryenModuleDispose(module);
+
+  // See we can read the bytes and get a valid module from there.
+  BinaryenModuleRef readModule = BinaryenModuleRead(buffer, written);
+  BinaryenModuleSetFeatures(readModule, BinaryenFeatureAll());
+  valid = BinaryenModuleValidate(readModule);
+  assert(valid);
+  BinaryenModuleDispose(readModule);
+
+  free(buffer);
 }
 
 void test_unreachable() {
@@ -1493,10 +1803,15 @@ void test_binaries() {
   BinaryenModuleWriteText(module, buffer, 1024);
   printf("module s-expr printed (in memory):\n%s\n", buffer);
 
-  // writ the s-expr representation to a pointer which is managed by the
+  // write the s-expr representation to a pointer which is managed by the
   // caller
   char* text = BinaryenModuleAllocateAndWriteText(module);
   printf("module s-expr printed (in memory, caller-owned):\n%s\n", text);
+  free(text);
+
+  // write StackIR
+  text = BinaryenModuleAllocateAndWriteStackIR(module);
+  printf("module s-expr printed (StackIR):\n%s\n", text);
   free(text);
 
   BinaryenModuleDispose(module);
@@ -1606,9 +1921,10 @@ void test_for_each() {
       assert(BinaryenGetExportByIndex(module, i) == exps[i]);
     }
 
-    const char* segments[] = {"hello, world", "segment data 2"};
+    const char* segmentNames[] = {"0", "1"};
+    const char* segmentDatas[] = {"hello, world", "segment data 2"};
     const uint32_t expected_offsets[] = {10, 125};
-    bool segmentPassive[] = {false, false};
+    bool segmentPassives[] = {false, false};
     BinaryenIndex segmentSizes[] = {12, 14};
 
     BinaryenExpressionRef segmentOffsets[] = {
@@ -1618,12 +1934,15 @@ void test_for_each() {
                       1,
                       256,
                       "mem",
-                      segments,
-                      segmentPassive,
+                      segmentNames,
+                      segmentDatas,
+                      segmentPassives,
                       segmentOffsets,
                       segmentSizes,
                       2,
-                      0);
+                      0,
+                      0,
+                      "0");
     BinaryenAddGlobal(module,
                       "a-global",
                       BinaryenTypeInt32(),
@@ -1632,11 +1951,12 @@ void test_for_each() {
 
     for (i = 0; i < BinaryenGetNumMemorySegments(module); i++) {
       char out[15] = {};
-      assert(BinaryenGetMemorySegmentByteOffset(module, i) ==
+      assert(BinaryenGetMemorySegmentByteOffset(module, segmentNames[i]) ==
              expected_offsets[i]);
-      assert(BinaryenGetMemorySegmentByteLength(module, i) == segmentSizes[i]);
-      BinaryenCopyMemorySegmentData(module, i, out);
-      assert(0 == strcmp(segments[i], out));
+      assert(BinaryenGetMemorySegmentByteLength(module, segmentNames[i]) ==
+             segmentSizes[i]);
+      BinaryenCopyMemorySegmentData(module, segmentNames[i], out);
+      assert(0 == strcmp(segmentDatas[i], out));
     }
   }
   {
@@ -1686,6 +2006,230 @@ void test_func_opt() {
   BinaryenModuleDispose(module);
 }
 
+void test_typebuilder() {
+  printf("TypeBuilderErrorReasonSelfSupertype: %d\n",
+         TypeBuilderErrorReasonSelfSupertype());
+  printf("TypeBuilderErrorReasonInvalidSupertype: %d\n",
+         TypeBuilderErrorReasonInvalidSupertype());
+  printf("TypeBuilderErrorReasonForwardSupertypeReference: %d\n",
+         TypeBuilderErrorReasonForwardSupertypeReference());
+  printf("TypeBuilderErrorReasonForwardChildReference: %d\n",
+         TypeBuilderErrorReasonForwardChildReference());
+
+  TypeBuilderRef builder = TypeBuilderCreate(0);
+  assert(TypeBuilderGetSize(builder) == 0);
+  TypeBuilderGrow(builder, 4);
+  assert(TypeBuilderGetSize(builder) == 4);
+
+  // Create a recursive array of its own type
+  const BinaryenIndex tempArrayIndex = 0;
+  BinaryenHeapType tempArrayHeapType =
+    TypeBuilderGetTempHeapType(builder, tempArrayIndex);
+  BinaryenType tempArrayType =
+    TypeBuilderGetTempRefType(builder, tempArrayHeapType, true);
+  TypeBuilderSetArrayType(builder,
+                          tempArrayIndex,
+                          tempArrayType,
+                          BinaryenPackedTypeNotPacked(),
+                          true);
+  TypeBuilderSetOpen(builder, tempArrayIndex);
+
+  // Create a recursive struct with a field of its own type
+  const BinaryenIndex tempStructIndex = 1;
+  BinaryenHeapType tempStructHeapType =
+    TypeBuilderGetTempHeapType(builder, tempStructIndex);
+  BinaryenType tempStructType =
+    TypeBuilderGetTempRefType(builder, tempStructHeapType, true);
+  {
+    BinaryenType fieldTypes[] = {tempStructType};
+    BinaryenPackedType fieldPackedTypes[] = {BinaryenPackedTypeNotPacked()};
+    bool fieldMutables[] = {true};
+    TypeBuilderSetStructType(
+      builder, tempStructIndex, fieldTypes, fieldPackedTypes, fieldMutables, 1);
+    TypeBuilderSetOpen(builder, tempStructIndex);
+  }
+
+  // Create a recursive signature with parameter and result including its own
+  // type
+  const BinaryenIndex tempSignatureIndex = 2;
+  BinaryenHeapType tempSignatureHeapType =
+    TypeBuilderGetTempHeapType(builder, tempSignatureIndex);
+  BinaryenType tempSignatureType =
+    TypeBuilderGetTempRefType(builder, tempSignatureHeapType, true);
+  {
+    BinaryenType paramTypes[] = {tempSignatureType, tempArrayType};
+    TypeBuilderSetSignatureType(
+      builder,
+      tempSignatureIndex,
+      TypeBuilderGetTempTupleType(builder, (BinaryenType*)&paramTypes, 2),
+      tempSignatureType);
+    TypeBuilderSetOpen(builder, tempSignatureIndex);
+  }
+
+  // Create a subtype (with an additional immutable packed field)
+  const BinaryenIndex tempSubStructIndex = 3;
+  BinaryenHeapType tempSubStructHeapType =
+    TypeBuilderGetTempHeapType(builder, tempSubStructIndex);
+  BinaryenType tempSubStructType =
+    TypeBuilderGetTempRefType(builder, tempSubStructHeapType, true);
+  {
+    BinaryenType fieldTypes[] = {
+      tempStructType, BinaryenTypeInt32()}; // must repeat existing fields
+    BinaryenPackedType fieldPackedTypes[] = {BinaryenPackedTypeNotPacked(),
+                                             BinaryenPackedTypeInt8()};
+    bool fieldMutables[] = {true, false};
+    TypeBuilderSetStructType(builder,
+                             tempSubStructIndex,
+                             fieldTypes,
+                             fieldPackedTypes,
+                             fieldMutables,
+                             2);
+    TypeBuilderSetOpen(builder, tempSubStructIndex);
+  }
+  TypeBuilderSetSubType(builder, tempSubStructIndex, tempStructHeapType);
+
+  // Build the type hierarchy and dispose the builder
+  BinaryenHeapType heapTypes[4];
+  BinaryenIndex errorIndex;
+  TypeBuilderErrorReason errorReason;
+  bool didBuildAndDispose = TypeBuilderBuildAndDispose(
+    builder, (BinaryenHeapType*)&heapTypes, &errorIndex, &errorReason);
+  assert(didBuildAndDispose);
+
+  BinaryenHeapType arrayHeapType = heapTypes[tempArrayIndex];
+  assert(!BinaryenHeapTypeIsSignature(arrayHeapType));
+  assert(!BinaryenHeapTypeIsStruct(arrayHeapType));
+  assert(BinaryenHeapTypeIsArray(arrayHeapType));
+  assert(!BinaryenHeapTypeIsBottom(arrayHeapType));
+  assert(BinaryenHeapTypeIsSubType(arrayHeapType, BinaryenHeapTypeArray()));
+  BinaryenType arrayType = BinaryenTypeFromHeapType(arrayHeapType, true);
+  assert(BinaryenArrayTypeGetElementType(arrayHeapType) == arrayType);
+  assert(BinaryenArrayTypeGetElementPackedType(arrayHeapType) ==
+         BinaryenPackedTypeNotPacked());
+  assert(BinaryenArrayTypeIsElementMutable(arrayHeapType));
+
+  BinaryenHeapType structHeapType = heapTypes[tempStructIndex];
+  assert(!BinaryenHeapTypeIsSignature(structHeapType));
+  assert(BinaryenHeapTypeIsStruct(structHeapType));
+  assert(!BinaryenHeapTypeIsArray(structHeapType));
+  assert(!BinaryenHeapTypeIsBottom(structHeapType));
+  assert(BinaryenHeapTypeIsSubType(structHeapType, BinaryenHeapTypeStruct()));
+  BinaryenType structType = BinaryenTypeFromHeapType(structHeapType, true);
+  assert(BinaryenStructTypeGetNumFields(structHeapType) == 1);
+  assert(BinaryenStructTypeGetFieldType(structHeapType, 0) == structType);
+  assert(BinaryenStructTypeGetFieldPackedType(structHeapType, 0) ==
+         BinaryenPackedTypeNotPacked());
+  assert(BinaryenStructTypeIsFieldMutable(structHeapType, 0));
+
+  BinaryenHeapType signatureHeapType = heapTypes[tempSignatureIndex];
+  assert(BinaryenHeapTypeIsSignature(signatureHeapType));
+  assert(!BinaryenHeapTypeIsStruct(signatureHeapType));
+  assert(!BinaryenHeapTypeIsArray(signatureHeapType));
+  assert(!BinaryenHeapTypeIsBottom(signatureHeapType));
+  assert(BinaryenHeapTypeIsSubType(signatureHeapType, BinaryenHeapTypeFunc()));
+  BinaryenType signatureType =
+    BinaryenTypeFromHeapType(signatureHeapType, true);
+  BinaryenType signatureParams =
+    BinaryenSignatureTypeGetParams(signatureHeapType);
+  assert(BinaryenTypeArity(signatureParams) == 2);
+  BinaryenType expandedSignatureParams[2];
+  BinaryenTypeExpand(signatureParams, (BinaryenType*)expandedSignatureParams);
+  assert(expandedSignatureParams[0] == signatureType);
+  assert(expandedSignatureParams[1] == arrayType);
+  BinaryenType signatureResults =
+    BinaryenSignatureTypeGetResults(signatureHeapType);
+  assert(BinaryenTypeArity(signatureResults) == 1);
+  assert(signatureResults == signatureType);
+
+  BinaryenHeapType subStructHeapType = heapTypes[tempSubStructIndex];
+  assert(!BinaryenHeapTypeIsSignature(subStructHeapType));
+  assert(BinaryenHeapTypeIsStruct(subStructHeapType));
+  assert(!BinaryenHeapTypeIsArray(subStructHeapType));
+  assert(!BinaryenHeapTypeIsBottom(subStructHeapType));
+  assert(
+    BinaryenHeapTypeIsSubType(subStructHeapType, BinaryenHeapTypeStruct()));
+  assert(BinaryenHeapTypeIsSubType(subStructHeapType, structHeapType));
+  BinaryenType subStructType =
+    BinaryenTypeFromHeapType(subStructHeapType, true);
+  assert(BinaryenStructTypeGetNumFields(subStructHeapType) == 2);
+  assert(BinaryenStructTypeGetFieldType(subStructHeapType, 0) == structType);
+  assert(BinaryenStructTypeGetFieldType(subStructHeapType, 1) ==
+         BinaryenTypeInt32());
+  assert(BinaryenStructTypeGetFieldPackedType(subStructHeapType, 0) ==
+         BinaryenPackedTypeNotPacked());
+  assert(BinaryenStructTypeGetFieldPackedType(subStructHeapType, 1) ==
+         BinaryenPackedTypeInt8());
+  assert(BinaryenStructTypeIsFieldMutable(subStructHeapType, 0));
+  assert(!BinaryenStructTypeIsFieldMutable(subStructHeapType, 1));
+
+  // Build a simple test module, validate and print it
+  BinaryenModuleRef module = BinaryenModuleCreate();
+  BinaryenModuleSetTypeName(module, arrayHeapType, "SomeArray");
+  BinaryenModuleSetTypeName(module, structHeapType, "SomeStruct");
+  BinaryenModuleSetFieldName(module, structHeapType, 0, "SomeField");
+  BinaryenModuleSetTypeName(module, signatureHeapType, "SomeSignature");
+  BinaryenModuleSetTypeName(module, subStructHeapType, "SomeSubStruct");
+  BinaryenModuleSetFieldName(module, subStructHeapType, 0, "SomeField");
+  BinaryenModuleSetFieldName(module, subStructHeapType, 1, "SomePackedField");
+  BinaryenModuleSetFeatures(
+    module, BinaryenFeatureReferenceTypes() | BinaryenFeatureGC());
+  {
+    BinaryenType varTypes[] = {
+      arrayType, structType, signatureType, subStructType};
+    BinaryenAddFunction(module,
+                        "test",
+                        BinaryenTypeNone(),
+                        BinaryenTypeNone(),
+                        varTypes,
+                        4,
+                        BinaryenNop(module));
+    // Also test adding a function using the HeapType-using API.
+    BinaryenAddFunctionWithHeapType(
+      module, "test2", signatureHeapType, NULL, 0, BinaryenUnreachable(module));
+  }
+  bool didValidate = BinaryenModuleValidate(module);
+  assert(didValidate);
+  printf("module with recursive GC types:\n");
+  BinaryenModulePrint(module);
+  BinaryenModuleDispose(module);
+}
+
+void test_callref_and_types() {
+  BinaryenModuleRef module = BinaryenModuleCreate();
+  BinaryenModuleSetFeatures(module, BinaryenFeatureAll());
+
+  // Create a tiny function.
+  BinaryenFunctionRef tiny = BinaryenAddFunction(module,
+                                                 "tiny",
+                                                 BinaryenTypeNone(),
+                                                 BinaryenTypeNone(),
+                                                 NULL,
+                                                 0,
+                                                 BinaryenNop(module));
+
+  // Get a non-nullable type with that function's heap type.
+  BinaryenHeapType funcType =
+    BinaryenTypeFromHeapType(BinaryenFunctionGetType(tiny), false);
+
+  // Add a CallRef with that function and that type. Note that the RefFunc must
+  // use that type (and not generic funcref, as in the IR the type must always
+  // be precise).
+  BinaryenExpressionRef callRef =
+    BinaryenCallRef(module,
+                    BinaryenRefFunc(module, "tiny", funcType),
+                    NULL,
+                    0,
+                    BinaryenTypeNone(),
+                    false);
+  BinaryenFunctionSetBody(tiny, callRef);
+
+  bool didValidate = BinaryenModuleValidate(module);
+  assert(didValidate);
+  printf("module with a call_ref:\n");
+  BinaryenModulePrint(module);
+  BinaryenModuleDispose(module);
+}
+
 int main() {
   test_types();
   test_features();
@@ -1698,6 +2242,8 @@ int main() {
   test_color_status();
   test_for_each();
   test_func_opt();
+  test_typebuilder();
+  test_callref_and_types();
 
   return 0;
 }

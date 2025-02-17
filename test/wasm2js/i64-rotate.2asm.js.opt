@@ -1,5 +1,5 @@
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -10,11 +10,8 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  var i64toi32_i32$HIGH_BITS = 0;
- function legalstub$1($0, $1, $2, $3, $4, $5) {
+ function legalstub$0($0, $1, $2, $3, $4, $5) {
   var $6 = 0, $7 = 0, $8 = 0;
   $8 = $0;
   $0 = 0;
@@ -62,7 +59,7 @@ function asmFunc(env) {
   return ($0 | 0) == ($4 | 0) & ($5 | 0) == (i64toi32_i32$HIGH_BITS | 0);
  }
  
- function legalstub$2($0, $1, $2, $3, $4, $5) {
+ function legalstub$1($0, $1, $2, $3, $4, $5) {
   var $6 = 0, $7 = 0, $8 = 0, $9 = 0;
   $8 = $0;
   $7 = $2 & 63;
@@ -111,12 +108,12 @@ function asmFunc(env) {
  }
  
  return {
-  "rotl": legalstub$1, 
-  "rotr": legalstub$2
+  "rotl": legalstub$0, 
+  "rotr": legalstub$1
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var rotl = retasmFunc.rotl;
 export var rotr = retasmFunc.rotr;

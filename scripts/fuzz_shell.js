@@ -1,25 +1,47 @@
-// Shell integration.
-if (typeof console === 'undefined') {
-  console = { log: print };
-}
-var tempRet0;
-var binary;
-if (typeof process === 'object' && typeof require === 'function' /* node.js detection */) {
-  var args = process.argv.slice(2);
-  binary = require('fs').readFileSync(args[0]);
-  if (!binary.buffer) binary = new Uint8Array(binary);
+// Shell integration: find argv and set up readBinary().
+var argv;
+var readBinary;
+if (typeof process === 'object' && typeof require === 'function') {
+  // Node.js.
+  argv = process.argv.slice(2);
+  readBinary = function(name) {
+    var data = require('fs').readFileSync(name);
+    if (!data.buffer) data = new Uint8Array(data);
+    return data;
+  };
 } else {
-  var args;
+  // A shell like D8.
   if (typeof scriptArgs != 'undefined') {
-    args = scriptArgs;
+    argv = scriptArgs;
   } else if (typeof arguments != 'undefined') {
-    args = arguments;
+    argv = arguments;
   }
-  if (typeof readbuffer === 'function') {
-    binary = new Uint8Array(readbuffer(args[0]));
-  } else {
-    binary = read(args[0], 'binary');
-  }
+  readBinary = function(name) {
+    if (typeof readbuffer === 'function') {
+      return new Uint8Array(readbuffer(name));
+    } else {
+      return read(name, 'binary');
+    }
+  };
+}
+
+// We are given the binary to run as a parameter.
+var binary = readBinary(argv[0]);
+
+// Normally we call all the exports of the given wasm file. But, if we are
+// passed a final parameter in the form of "exports:X,Y,Z" then we call
+// specifically the exports X, Y, and Z.
+var exportsToCall;
+if (argv[argv.length - 1].startsWith('exports:')) {
+  exportsToCall = argv[argv.length - 1].substr('exports:'.length).split(',');
+  argv.pop();
+}
+
+// If a second parameter is given, it is a second binary that we will link in
+// with it.
+var secondBinary;
+if (argv[1]) {
+  secondBinary = readBinary(argv[1]);
 }
 
 // Utilities.
@@ -27,193 +49,202 @@ function assert(x, y) {
   if (!x) throw (y || 'assertion failed');// + new Error().stack;
 }
 
-// Deterministic randomness.
-var detrand = (function() {
-  var hash = 5381; // TODO DET_RAND_SEED;
-  var x = 0;
-  return function() {
-    hash = (((hash << 5) + hash) ^ (x & 0xff)) >>> 0;
-    x = (x + 1) % 256;
-    return (hash % 256) / 256;
-  };
-})();
-
-// Asyncify integration.
-var Asyncify = {
-  sleeping: false,
-  sleepingFunction: null,
-  sleeps: 0,
-  maxDepth: 0,
-  DATA_ADDR: 4,
-  DATA_MAX: 65536,
-  savedMemory: null,
-  instrumentImports: function(imports) {
-    var ret = {};
-    for (var module in imports) {
-      ret[module] = {};
-      for (var i in imports[module]) {
-        if (typeof imports[module][i] === 'function') {
-          (function(module, i) {
-            ret[module][i] = function() {
-              refreshView();
-              if (!Asyncify.sleeping) {
-                // Sleep if asyncify support is present (which also requires
-                // that the memory be exported), and at a certain probability.
-                if (exports.asyncify_start_unwind &&
-                    view &&
-                    detrand() < 0.5) {
-                  // We are called in order to start a sleep/unwind.
-                  console.log('asyncify: sleep in ' + i + '...');
-                  Asyncify.sleepingFunction = i;
-                  Asyncify.sleeps++;
-                  var depth = new Error().stack.split('\n').length - 6;
-                  Asyncify.maxDepth = Math.max(Asyncify.maxDepth, depth);
-                  // Save the memory we use for data, so after we restore it later, the
-                  // sleep/resume appears to have had no change to memory.
-                  Asyncify.savedMemory = new Int32Array(view.subarray(Asyncify.DATA_ADDR >> 2, Asyncify.DATA_MAX >> 2));
-                  // Unwinding.
-                  // Fill in the data structure. The first value has the stack location,
-                  // which for simplicity we can start right after the data structure itself.
-                  view[Asyncify.DATA_ADDR >> 2] = Asyncify.DATA_ADDR + 8;
-                  // The end of the stack will not be reached here anyhow.
-                  view[Asyncify.DATA_ADDR + 4 >> 2] = Asyncify.DATA_MAX;
-                  exports.asyncify_start_unwind(Asyncify.DATA_ADDR);
-                  Asyncify.sleeping = true;
-                } else {
-                  // Don't sleep, normal execution.
-                  return imports[module][i].apply(null, arguments);
-                }
-              } else {
-                // We are called as part of a resume/rewind. Stop sleeping.
-                console.log('asyncify: resume in ' + i + '...');
-                assert(Asyncify.sleepingFunction === i);
-                exports.asyncify_stop_rewind();
-                // The stack should have been all used up, and so returned to the original state.
-                assert(view[Asyncify.DATA_ADDR >> 2] == Asyncify.DATA_ADDR + 8);
-                assert(view[Asyncify.DATA_ADDR + 4 >> 2] == Asyncify.DATA_MAX);
-                Asyncify.sleeping = false;
-                // Restore the memory to the state from before we slept.
-                view.set(Asyncify.savedMemory, Asyncify.DATA_ADDR >> 2);
-                return imports[module][i].apply(null, arguments);
-              }
-            };
-          })(module, i);
-        } else {
-          ret[module][i] = imports[module][i];
-        }
-      }
-    }
-    // Add ignored.print, which is ignored by asyncify, and allows debugging of asyncified code.
-    ret['ignored'] = { 'print': function(x, y) { console.log(x, y) } };
-    return ret;
-  },
-  instrumentExports: function(exports) {
-    var ret = {};
-    for (var e in exports) {
-      if (typeof exports[e] === 'function' &&
-          !e.startsWith('asyncify_')) {
-        (function(e) {
-          ret[e] = function() {
-            while (1) {
-              var ret = exports[e].apply(null, arguments);
-              // If we are sleeping, then the stack was unwound; rewind it.
-              if (Asyncify.sleeping) {
-                console.log('asyncify: stop unwind; rewind');
-                assert(!ret, 'results during sleep are meaningless, just 0');
-                //console.log('asyncify: after unwind', view[Asyncify.DATA_ADDR >> 2], view[Asyncify.DATA_ADDR + 4 >> 2]);
-                try {
-                  exports.asyncify_stop_unwind();
-                  exports.asyncify_start_rewind(Asyncify.DATA_ADDR);
-                } catch (e) {
-                  console.log('error in unwind/rewind switch', e);
-                }
-                continue;
-              }
-              return ret;
-            }
-          };
-        })(e);
-      } else {
-        ret[e] = exports[e];
-      }
-    }
-    return ret;
-  },
-  check: function() {
-    assert(!Asyncify.sleeping);
-  },
-  finish: function() {
-    if (Asyncify.sleeps > 0) {
-      print('asyncify:', 'sleeps:', Asyncify.sleeps, 'max depth:', Asyncify.maxDepth);
-    }
-  },
-};
-
-// Fuzz integration.
-function logValue(x, y) {
+// Print out a value in a way that works well for fuzzing.
+function printed(x, y) {
   if (typeof y !== 'undefined') {
-    console.log('[LoggingExternalInterface logging ' + x + ' ' + y + ']');
+    // A pair of i32s which are a legalized i64.
+    return x + ' ' + y;
+  } else if (x === null) {
+    // JS has just one null. Print that out rather than typeof null which is
+    // 'object', below.
+    return 'null';
+  } else if (typeof x === 'string') {
+    // Emit a string in the same format as the binaryen interpreter. This
+    // escaping routine must be kept in sync with String::printEscapedJSON.
+    var escaped = '';
+    for (u of x) {
+      switch (u) {
+        case '"':
+          escaped += '\\"';
+          continue;
+        case '\\':
+          escaped += '\\\\';
+          continue;
+        case '\b':
+          escaped += '\\b';
+          continue;
+        case '\f':
+          escaped += '\\f';
+          continue;
+        case '\n':
+          escaped += '\\n';
+          continue;
+        case '\r':
+          escaped += '\\r';
+          continue;
+        case '\t':
+          escaped += '\\t';
+          continue;
+        default:
+          break;
+      }
+
+      var codePoint = u.codePointAt(0);
+      if (32 <= codePoint && codePoint < 127) {
+        escaped += u;
+        continue
+      }
+
+      var printEscape = (codePoint) => {
+        escaped += '\\u'
+        escaped += ((codePoint & 0xF000) >> 12).toString(16);
+        escaped += ((codePoint & 0x0F00) >> 8).toString(16);
+        escaped += ((codePoint & 0x00F0) >> 4).toString(16);
+        escaped += (codePoint & 0x000F).toString(16);
+      };
+
+      if (codePoint < 0x10000) {
+        printEscape(codePoint);
+      } else {
+        printEscape(0xD800 + ((codePoint - 0x10000) >> 10));
+        printEscape(0xDC00 + ((codePoint - 0x10000) & 0x3FF));
+      }
+    }
+    return 'string("' + escaped + '")';
+  } else if (typeof x === 'bigint') {
+    // Print bigints in legalized form, which is two 32-bit numbers of the low
+    // and high bits.
+    return (Number(x) | 0) + ' ' + (Number(x >> 32n) | 0)
+  } else if (typeof x !== 'number') {
+    // Something that is not a number or string, like a reference. We can't
+    // print a reference because it could look different after opts - imagine
+    // that a function gets renamed internally (that is, the problem is that
+    // JS printing will emit some info about the reference and not a stable
+    // external representation of it). In those cases just print the type,
+    // which will be 'object' or 'function'.
+    return typeof x;
   } else {
-    console.log('[LoggingExternalInterface logging ' + x + ']');
+    // A number. Print the whole thing.
+    return '' + x;
   }
 }
 
+// Fuzzer integration.
+function logValue(x, y) {
+  console.log('[LoggingExternalInterface logging ' + printed(x, y) + ']');
+}
+
 // Set up the imports.
+var tempRet0;
 var imports = {
   'fuzzing-support': {
+    // Logging.
     'log-i32': logValue,
     'log-i64': logValue,
     'log-f32': logValue,
     'log-f64': logValue,
+    // JS cannot log v128 values (we trap on the boundary), but we must still
+    // provide an import so that we do not trap during linking. (Alternatively,
+    // we could avoid running JS on code with SIMD in it, but it is useful to
+    // fuzz such code as much as we can.)
+    'log-v128': logValue,
+
+    // Throw an exception from JS.
+    'throw': () => {
+      throw 'some JS error';
+    }
   },
+  // Emscripten support.
   'env': {
     'setTempRet0': function(x) { tempRet0 = x },
     'getTempRet0': function() { return tempRet0 },
   },
 };
 
-imports = Asyncify.instrumentImports(imports);
+// If Tags are available, add the import j2wasm expects.
+if (typeof WebAssembly.Tag !== 'undefined') {
+  imports['imports'] = {
+    'j2wasm.ExceptionUtils.tag': new WebAssembly.Tag({
+      'parameters': ['externref']
+    }),
+  };
+}
+
+// If a second binary will be linked in then set up the imports for
+// placeholders. Any import like  (import "placeholder" "0" (func ..  will be
+// provided by the secondary module, and must be called using an indirection.
+if (secondBinary) {
+  imports['placeholder'] = new Proxy({}, {
+    get(target, prop, receiver) {
+      // Return a function that throws. We could do an indirect call using the
+      // exported table, but as we immediately link in the secondary module,
+      // these stubs will not be called (they are written to the table, and the
+      // secondary module overwrites them). We do need to return something so
+      // the primary module links without erroring, though.
+      return () => {
+        throw 'proxy stub should not be called';
+      }
+    }
+  });
+}
 
 // Create the wasm.
-var instance = new WebAssembly.Instance(new WebAssembly.Module(binary), imports);
+var module = new WebAssembly.Module(binary);
+
+var instance;
+try {
+  instance = new WebAssembly.Instance(module, imports);
+} catch (e) {
+  console.log('exception thrown: failed to instantiate module');
+  quit();
+}
 
 // Handle the exports.
 var exports = instance.exports;
-exports = Asyncify.instrumentExports(exports);
 
-var view;
+// Link in a second module, if one was provided.
+if (secondBinary) {
+  var secondModule = new WebAssembly.Module(secondBinary);
 
-// Recreate the view. This is important both initially and after a growth.
-function refreshView() {
-  if (exports.memory) {
-    view = new Int32Array(exports.memory.buffer);
+  // The secondary module just needs to import the primary one: all original
+  // imports it might have needed were exported from there.
+  var secondImports = {'primary': exports};
+  var secondInstance;
+  try {
+    secondInstance = new WebAssembly.Instance(secondModule, secondImports);
+  } catch (e) {
+    console.log('exception thrown: failed to instantiate second module');
+    quit();
   }
 }
 
 // Run the wasm.
-var sortedExports = [];
-for (var e in exports) {
-  sortedExports.push(e);
+if (!exportsToCall) {
+  // We were not told specific exports, so call them all.
+  exportsToCall = [];
+  for (var e in exports) {
+    exportsToCall.push(e);
+  }
 }
-sortedExports.sort();
-sortedExports = sortedExports.filter(function(e) {
-  // Filter special intrinsic functions.
-  return !e.startsWith('asyncify_');
-});
-sortedExports.forEach(function(e) {
-  Asyncify.check();
-  if (typeof exports[e] !== 'function') return;
+
+for (var e of exportsToCall) {
+  if (typeof exports[e] !== 'function') {
+    continue;
+  }
+  // Send the function a null for each parameter. Null can be converted without
+  // error to both a number and a reference.
+  var func = exports[e];
+  var args = [];
+  for (var i = 0; i < func.length; i++) {
+    args.push(null);
+  }
   try {
     console.log('[fuzz-exec] calling ' + e);
-    var result = exports[e]();
+    var result = func.apply(null, args);
     if (typeof result !== 'undefined') {
-      console.log('[fuzz-exec] note result: $' + e + ' => ' + result);
+      console.log('[fuzz-exec] note result: ' + e + ' => ' + printed(result));
     }
   } catch (e) {
-    console.log('exception!');// + [e, e.stack]);
+    console.log('exception thrown: ' + e);
   }
-});
-
-// Finish up
-Asyncify.finish();
-
+}

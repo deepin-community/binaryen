@@ -21,6 +21,10 @@
 namespace wasm {
 
 JsType wasmToJsType(Type type) {
+  if (type.isRef()) {
+    return JS_REF;
+  }
+
   TODO_SINGLE_COMPOUND(type);
   switch (type.getBasic()) {
     case Type::i32:
@@ -33,12 +37,6 @@ JsType wasmToJsType(Type type) {
       return JS_INT64;
     case Type::v128:
       WASM_UNREACHABLE("v128 not implemented yet");
-    case Type::funcref:
-    case Type::anyref:
-    case Type::eqref:
-    case Type::i31ref:
-    case Type::dataref:
-      WASM_UNREACHABLE("reference types are not supported by wasm2js");
     case Type::none:
       return JS_NONE;
     case Type::unreachable:
@@ -60,16 +58,6 @@ char getSig(Type type) {
       return 'd';
     case Type::v128:
       return 'V';
-    case Type::funcref:
-      return 'F';
-    case Type::anyref:
-      return 'A';
-    case Type::eqref:
-      return 'Q';
-    case Type::i31ref:
-      return 'I';
-    case Type::dataref:
-      return 'D';
     case Type::none:
       return 'v';
     case Type::unreachable:

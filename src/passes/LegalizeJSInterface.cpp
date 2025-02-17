@@ -22,12 +22,11 @@
 // stub methods added in this pass, that thunk i64s into i32, i32 and
 // vice versa as necessary.
 //
-// We can also legalize in a "minimal" way, that is, only JS-specific
-// components, that only JS will care about, such as dynCall methods
-// (wasm will never call them, as it can share the tables directly). E.g.
-// is dynamic linking, where we can avoid legalizing wasm=>wasm calls
-// across modules, we still want to legalize dynCalls so JS can call into the
-// tables even to a signature that is not legal.
+// Another variation also "prunes" imports and exports that we cannot yet
+// legalize, like exports and imports with SIMD or multivalue. Until we write
+// the logic to legalize them, removing those imports/exports still allows us to
+// fuzz all the legal imports/exports. (Note that multivalue is supported in
+// exports in newer VMs - node 16+ - so that part is only needed for older VMs.)
 //
 
 #include "asmjs/shared-constants.h"
@@ -43,23 +42,37 @@
 
 namespace wasm {
 
+namespace {
+
+// These are aliases for getTempRet0/setTempRet0 which emscripten defines in
+// compiler-rt and exports under these names.
+static Name GET_TEMP_RET_EXPORT("__get_temp_ret");
+static Name SET_TEMP_RET_EXPORT("__set_temp_ret");
+
+// For non-emscripten module we expect the host to define these functions so
+// and we import them under these names.
+static Name GET_TEMP_RET_IMPORT("getTempRet0");
+static Name SET_TEMP_RET_IMPORT("setTempRet0");
+
 struct LegalizeJSInterface : public Pass {
-  bool full;
+  // Adds calls to new imports.
+  bool addsEffects() override { return true; }
 
-  LegalizeJSInterface(bool full) : full(full) {}
+  LegalizeJSInterface() {}
 
-  void run(PassRunner* runner, Module* module) override {
+  void run(Module* module) override {
+    setTempRet0 = nullptr;
+    getTempRet0 = nullptr;
     auto exportOriginals =
-      !runner->options
-         .getArgumentOrDefault("legalize-js-interface-export-originals", "")
-         .empty();
+      hasArgument("legalize-js-interface-export-originals");
+    exportedHelpers = hasArgument("legalize-js-interface-exported-helpers");
     // for each illegal export, we must export a legalized stub instead
     std::vector<std::unique_ptr<Export>> newExports;
     for (auto& ex : module->exports) {
       if (ex->kind == ExternalKind::Function) {
         // if it's an import, ignore it
         auto* func = module->getFunction(ex->value);
-        if (isIllegal(func) && shouldBeLegalized(ex.get(), func)) {
+        if (isIllegal(func)) {
           // Provide a legal function for the export.
           auto legalName = makeLegalStub(func, module);
           ex->value = legalName;
@@ -74,7 +87,7 @@ struct LegalizeJSInterface : public Pass {
             // are only called from JS.
             if (!func->imported() && !isDynCall(ex->name)) {
               Builder builder(*module);
-              Name newName = std::string("orig$") + ex->name.str;
+              Name newName = std::string("orig$") + ex->name.toString();
               newExports.push_back(builder.makeExport(
                 newName, func->name, ExternalKind::Function));
             }
@@ -82,6 +95,7 @@ struct LegalizeJSInterface : public Pass {
         }
       }
     }
+
     for (auto& ex : newExports) {
       module->addExport(std::move(ex));
     }
@@ -92,7 +106,7 @@ struct LegalizeJSInterface : public Pass {
     }
     // for each illegal import, we must call a legalized stub instead
     for (auto* im : originalFunctions) {
-      if (im->imported() && isIllegal(im) && shouldBeLegalized(im)) {
+      if (im->imported() && isIllegal(im)) {
         auto funcName = makeLegalStubForCalledImport(im, module);
         illegalImportsToLegal[im->name] = funcName;
         // we need to use the legalized version in the tables, as the import
@@ -112,7 +126,9 @@ struct LegalizeJSInterface : public Pass {
       struct Fixer : public WalkerPass<PostWalker<Fixer>> {
         bool isFunctionParallel() override { return true; }
 
-        Pass* create() override { return new Fixer(illegalImportsToLegal); }
+        std::unique_ptr<Pass> create() override {
+          return std::make_unique<Fixer>(illegalImportsToLegal);
+        }
 
         std::map<Name, Name>* illegalImportsToLegal;
 
@@ -142,19 +158,25 @@ struct LegalizeJSInterface : public Pass {
       };
 
       Fixer fixer(&illegalImportsToLegal);
-      fixer.run(runner, module);
-      fixer.runOnModuleCode(runner, module);
+      fixer.run(getPassRunner(), module);
+      fixer.runOnModuleCode(getPassRunner(), module);
 
       // Finally we can remove all the now-unused illegal imports
       for (const auto& pair : illegalImportsToLegal) {
         module->removeFunction(pair.first);
       }
     }
+
+    module->removeExport(GET_TEMP_RET_EXPORT);
+    module->removeExport(SET_TEMP_RET_EXPORT);
   }
 
 private:
   // map of illegal to legal names for imports
   std::map<Name, Name> illegalImportsToLegal;
+  bool exportedHelpers = false;
+  Function* getTempRet0 = nullptr;
+  Function* setTempRet0 = nullptr;
 
   template<typename T> bool isIllegal(T* t) {
     for (const auto& param : t->getParams()) {
@@ -167,28 +189,36 @@ private:
 
   bool isDynCall(Name name) { return name.startsWith("dynCall_"); }
 
-  // Check if an export should be legalized.
-  bool shouldBeLegalized(Export* ex, Function* func) {
-    if (full) {
-      return true;
+  Function* tempSetter(Module* module) {
+    if (!setTempRet0) {
+      if (exportedHelpers) {
+        auto* ex = module->getExport(SET_TEMP_RET_EXPORT);
+        setTempRet0 = module->getFunction(ex->value);
+      } else {
+        setTempRet0 = getFunctionOrImport(
+          module, SET_TEMP_RET_IMPORT, Type::i32, Type::none);
+      }
     }
-    // We are doing minimal legalization - just what JS needs.
-    return isDynCall(ex->name);
+    return setTempRet0;
   }
 
-  // Check if an import should be legalized.
-  bool shouldBeLegalized(Function* im) {
-    if (full) {
-      return true;
+  Function* tempGetter(Module* module) {
+    if (!getTempRet0) {
+      if (exportedHelpers) {
+        auto* ex = module->getExport(GET_TEMP_RET_EXPORT);
+        getTempRet0 = module->getFunction(ex->value);
+      } else {
+        getTempRet0 = getFunctionOrImport(
+          module, GET_TEMP_RET_IMPORT, Type::none, Type::i32);
+      }
     }
-    // We are doing minimal legalization - just what JS needs.
-    return im->module == ENV && im->base.startsWith("invoke_");
+    return getTempRet0;
   }
 
   // JS calls the export, so it must call a legal stub that calls the actual
   // wasm function
   Name makeLegalStub(Function* func, Module* module) {
-    Name legalName(std::string("legalstub$") + func->name.str);
+    Name legalName(std::string("legalstub$") + func->name.toString());
 
     // a method may be exported multiple times
     if (module->getFunctionOrNull(legalName)) {
@@ -198,6 +228,7 @@ private:
     Builder builder(*module);
     auto* legal = new Function();
     legal->name = legalName;
+    legal->hasExplicitName = true;
 
     auto* call = module->allocator.alloc<Call>();
     call->target = func->name;
@@ -220,13 +251,13 @@ private:
       func->getResults() == Type::i64 ? Type::i32 : func->getResults();
     legal->type = Signature(Type(legalParams), resultsType);
     if (func->getResults() == Type::i64) {
-      Function* f =
-        getFunctionOrImport(module, SET_TEMP_RET0, Type::i32, Type::none);
       auto index = Builder::addVar(legal, Name(), Type::i64);
       auto* block = builder.makeBlock();
       block->list.push_back(builder.makeLocalSet(index, call));
-      block->list.push_back(builder.makeCall(
-        f->name, {I64Utilities::getI64High(builder, index)}, Type::none));
+      block->list.push_back(
+        builder.makeCall(tempSetter(module)->name,
+                         {I64Utilities::getI64High(builder, index)},
+                         Type::none));
       block->list.push_back(I64Utilities::getI64Low(builder, index));
       block->finalize();
       legal->body = block;
@@ -240,13 +271,15 @@ private:
   // JS import
   Name makeLegalStubForCalledImport(Function* im, Module* module) {
     Builder builder(*module);
-    auto legalIm = make_unique<Function>();
-    legalIm->name = Name(std::string("legalimport$") + im->name.str);
+    auto legalIm = std::make_unique<Function>();
+    legalIm->name = Name(std::string("legalimport$") + im->name.toString());
     legalIm->module = im->module;
     legalIm->base = im->base;
-    auto stub = make_unique<Function>();
-    stub->name = Name(std::string("legalfunc$") + im->name.str);
+    legalIm->hasExplicitName = true;
+    auto stub = std::make_unique<Function>();
+    stub->name = Name(std::string("legalfunc$") + im->name.toString());
     stub->type = im->type;
+    stub->hasExplicitName = true;
 
     auto* call = module->allocator.alloc<Call>();
     call->target = legalIm->name;
@@ -267,10 +300,9 @@ private:
     }
 
     if (im->getResults() == Type::i64) {
-      Function* f =
-        getFunctionOrImport(module, GET_TEMP_RET0, Type::none, Type::i32);
       call->type = Type::i32;
-      Expression* get = builder.makeCall(f->name, {}, call->type);
+      Expression* get =
+        builder.makeCall(tempGetter(module)->name, {}, call->type);
       stub->body = I64Utilities::recreateI64(builder, call, get);
     } else {
       call->type = im->getResults();
@@ -309,10 +341,84 @@ private:
   }
 };
 
-Pass* createLegalizeJSInterfacePass() { return new LegalizeJSInterface(true); }
+struct LegalizeAndPruneJSInterface : public LegalizeJSInterface {
+  // Legalize and add pruning on top.
+  LegalizeAndPruneJSInterface() : LegalizeJSInterface() {}
 
-Pass* createLegalizeJSInterfaceMinimallyPass() {
-  return new LegalizeJSInterface(false);
+  void run(Module* module) override {
+    LegalizeJSInterface::run(module);
+
+    prune(module);
+  }
+
+  void prune(Module* module) {
+    // For each function name, the exported id it is exported with. For
+    // example,
+    //
+    //   (func $foo (export "bar")
+    //
+    // Would have exportedFunctions["foo"] = "bar";
+    std::unordered_map<Name, Name> exportedFunctions;
+    for (auto& exp : module->exports) {
+      if (exp->kind == ExternalKind::Function) {
+        exportedFunctions[exp->value] = exp->name;
+      }
+    }
+
+    for (auto& func : module->functions) {
+      // If the function is neither exported nor imported, no problem.
+      auto imported = func->imported();
+      auto exported = exportedFunctions.count(func->name);
+      if (!imported && !exported) {
+        continue;
+      }
+
+      // The params are allowed to be multivalue, but not the results. Otherwise
+      // look for SIMD.
+      auto sig = func->type.getSignature();
+      auto illegal = isIllegal(sig.results);
+      illegal =
+        illegal || std::any_of(sig.params.begin(),
+                               sig.params.end(),
+                               [&](const Type& t) { return isIllegal(t); });
+      if (!illegal) {
+        continue;
+      }
+
+      // Prune an import by implementing it in a trivial manner.
+      if (imported) {
+        func->module = func->base = Name();
+
+        Builder builder(*module);
+        if (sig.results == Type::none) {
+          func->body = builder.makeNop();
+        } else {
+          func->body =
+            builder.makeConstantExpression(Literal::makeZeros(sig.results));
+        }
+      }
+
+      // Prune an export by just removing it.
+      if (exported) {
+        module->removeExport(exportedFunctions[func->name]);
+      }
+    }
+
+    // TODO: globals etc.
+  }
+
+  bool isIllegal(Type type) {
+    auto features = type.getFeatures();
+    return features.hasSIMD() || features.hasMultivalue();
+  }
+};
+
+} // anonymous namespace
+
+Pass* createLegalizeJSInterfacePass() { return new LegalizeJSInterface(); }
+
+Pass* createLegalizeAndPruneJSInterfacePass() {
+  return new LegalizeAndPruneJSInterface();
 }
 
 } // namespace wasm

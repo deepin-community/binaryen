@@ -39,6 +39,17 @@ namespace wasm {
 Name LOGGER("log_execution");
 
 struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
+  // The module name the logger function is imported from.
+  IString loggerModule;
+
+  // Adds calls to new imports.
+  bool addsEffects() override { return true; }
+
+  void run(Module* module) override {
+    loggerModule = getArgumentOrDefault("log-execution", "");
+    Super::run(module);
+  }
+
   void visitLoop(Loop* curr) { curr->body = makeLogCall(curr->body); }
 
   void visitReturn(Return* curr) { replaceCurrent(makeLogCall(curr)); }
@@ -59,7 +70,35 @@ struct LogExecution : public WalkerPass<PostWalker<LogExecution>> {
     // Add the import
     auto import =
       Builder::makeFunction(LOGGER, Signature(Type::i32, Type::none), {});
-    import->module = ENV;
+
+    if (loggerModule != "") {
+      import->module = loggerModule;
+    } else {
+      // Import the log function from import "env" if the module
+      // imports other functions from that name.
+      for (auto& func : curr->functions) {
+        if (func->imported() && func->module == ENV) {
+          import->module = func->module;
+          break;
+        }
+      }
+
+      // If not, then pick the import name of the first function we find.
+      if (!import->module) {
+        for (auto& func : curr->functions) {
+          if (func->imported()) {
+            import->module = func->module;
+            break;
+          }
+        }
+      }
+
+      // If no function was found, use ENV.
+      if (!import->module) {
+        import->module = ENV;
+      }
+    }
+
     import->base = LOGGER;
     curr->addFunction(std::move(import));
   }

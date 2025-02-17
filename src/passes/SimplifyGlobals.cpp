@@ -41,6 +41,7 @@
 #include <atomic>
 
 #include "ir/effects.h"
+#include "ir/find_all.h"
 #include "ir/linear-execution.h"
 #include "ir/properties.h"
 #include "ir/utils.h"
@@ -97,7 +98,9 @@ struct GlobalUseScanner : public WalkerPass<PostWalker<GlobalUseScanner>> {
 
   GlobalUseScanner(GlobalInfoMap* infos) : infos(infos) {}
 
-  GlobalUseScanner* create() override { return new GlobalUseScanner(infos); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<GlobalUseScanner>(infos);
+  }
 
   void visitGlobalSet(GlobalSet* curr) {
     (*infos)[curr->name].written++;
@@ -307,14 +310,21 @@ struct GlobalUseModifier : public WalkerPass<PostWalker<GlobalUseModifier>> {
   GlobalUseModifier(NameNameMap* copiedParentMap)
     : copiedParentMap(copiedParentMap) {}
 
-  GlobalUseModifier* create() override {
-    return new GlobalUseModifier(copiedParentMap);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<GlobalUseModifier>(copiedParentMap);
   }
 
   void visitGlobalGet(GlobalGet* curr) {
     auto iter = copiedParentMap->find(curr->name);
     if (iter != copiedParentMap->end()) {
-      curr->name = iter->second;
+      auto original = iter->second;
+      // Only apply this optimization if the global we are switching to has the
+      // right type for us.
+      // TODO: We could also allow it to be more refined, but would then need to
+      //       refinalize.
+      if (getModule()->getGlobal(original)->type == curr->type) {
+        curr->name = original;
+      }
     }
   }
 
@@ -326,13 +336,32 @@ struct ConstantGlobalApplier
   : public WalkerPass<
       LinearExecutionWalker<ConstantGlobalApplier,
                             UnifiedExpressionVisitor<ConstantGlobalApplier>>> {
+  using Super = WalkerPass<
+    LinearExecutionWalker<ConstantGlobalApplier,
+                          UnifiedExpressionVisitor<ConstantGlobalApplier>>>;
+
   bool isFunctionParallel() override { return true; }
 
   ConstantGlobalApplier(NameSet* constantGlobals, bool optimize)
     : constantGlobals(constantGlobals), optimize(optimize) {}
 
-  ConstantGlobalApplier* create() override {
-    return new ConstantGlobalApplier(constantGlobals, optimize);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<ConstantGlobalApplier>(constantGlobals, optimize);
+  }
+
+  // It is ok to look at adjacent blocks together, as if a later part of a block
+  // is not reached that is fine - changes we make there would not be reached in
+  // that case.
+  bool connectAdjacentBlocks = true;
+
+  bool refinalize = false;
+
+  void replaceCurrent(Expression* rep) {
+    if (rep->type != getCurrent()->type) {
+      // This operation will change the type, so refinalize.
+      refinalize = true;
+    }
+    Super::replaceCurrent(rep);
   }
 
   void visitExpression(Expression* curr) {
@@ -362,12 +391,20 @@ struct ConstantGlobalApplier
       }
       return;
     }
-    // Otherwise, invalidate if we need to.
-    EffectAnalyzer effects(getPassOptions(), *getModule());
-    effects.visit(curr);
-    assert(effects.globalsWritten.empty()); // handled above
+
+    // Otherwise, invalidate if we need to. Note that we handled a GlobalSet
+    // earlier, but also need to handle calls. A general call forces us to
+    // forget everything, but in some cases we can do better, if we have a call
+    // and have computed function effects for it.
+    ShallowEffectAnalyzer effects(getPassOptions(), *getModule(), curr);
     if (effects.calls) {
+      // Forget everything.
       currConstantGlobals.clear();
+    } else {
+      // Forget just the globals written, if any.
+      for (auto writtenGlobal : effects.globalsWritten) {
+        currConstantGlobals.erase(writtenGlobal);
+      }
     }
   }
 
@@ -376,11 +413,15 @@ struct ConstantGlobalApplier
   }
 
   void visitFunction(Function* curr) {
-    if (replaced && optimize) {
-      PassRunner runner(getModule(), getPassRunner()->options);
-      runner.setIsNested(true);
-      runner.addDefaultFunctionOptimizationPasses();
-      runner.runOnFunction(curr);
+    if (replaced) {
+      if (refinalize) {
+        ReFinalize().walkFunctionInModule(curr, this->getModule());
+      }
+      if (optimize) {
+        PassRunner runner(getPassRunner());
+        runner.addDefaultFunctionOptimizationPasses();
+        runner.runOnFunction(curr);
+      }
     }
   }
 
@@ -399,8 +440,8 @@ struct GlobalSetRemover : public WalkerPass<PostWalker<GlobalSetRemover>> {
 
   bool isFunctionParallel() override { return true; }
 
-  GlobalSetRemover* create() override {
-    return new GlobalSetRemover(toRemove, optimize);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<GlobalSetRemover>(toRemove, optimize);
   }
 
   void visitGlobalSet(GlobalSet* curr) {
@@ -412,8 +453,7 @@ struct GlobalSetRemover : public WalkerPass<PostWalker<GlobalSetRemover>> {
 
   void visitFunction(Function* curr) {
     if (removed && optimize) {
-      PassRunner runner(getModule(), getPassRunner()->options);
-      runner.setIsNested(true);
+      PassRunner runner(getPassRunner());
       runner.addDefaultFunctionOptimizationPasses();
       runner.runOnFunction(curr);
     }
@@ -428,7 +468,6 @@ private:
 } // anonymous namespace
 
 struct SimplifyGlobals : public Pass {
-  PassRunner* runner;
   Module* module;
 
   GlobalInfoMap map;
@@ -436,8 +475,7 @@ struct SimplifyGlobals : public Pass {
 
   SimplifyGlobals(bool optimize = false) : optimize(optimize) {}
 
-  void run(PassRunner* runner_, Module* module_) override {
-    runner = runner_;
+  void run(Module* module_) override {
     module = module_;
 
     while (iteration()) {
@@ -446,6 +484,11 @@ struct SimplifyGlobals : public Pass {
 
   bool iteration() {
     analyze();
+
+    // Fold single uses first, as it is simple to update the info from analyze()
+    // in this code (and harder to do in the things we do later, which is why we
+    // call analyze from scratch in each iteration).
+    foldSingleUses();
 
     // Removing unneeded writes can in some cases lead to more optimizations
     // that we need an entire additional iteration to perform, see below.
@@ -475,7 +518,11 @@ struct SimplifyGlobals : public Pass {
         map[ex->value].exported = true;
       }
     }
-    GlobalUseScanner(&map).run(runner, module);
+
+    GlobalUseScanner scanner(&map);
+    scanner.run(getPassRunner(), module);
+    scanner.runOnModuleCode(getPassRunner(), module);
+
     // We now know which are immutable in practice.
     for (auto& global : module->globals) {
       auto& info = map[global->name];
@@ -564,14 +611,15 @@ struct SimplifyGlobals : public Pass {
     // then see that since the global has no writes, it is a constant, which
     // will lead to removal of gets, and after removing them, the global itself
     // will be removed as well.
-    GlobalSetRemover(&globalsNotNeedingSets, optimize).run(runner, module);
+    GlobalSetRemover(&globalsNotNeedingSets, optimize)
+      .run(getPassRunner(), module);
 
     return more;
   }
 
   void preferEarlierImports() {
-    // Optimize uses of immutable globals, prefer the earlier import when
-    // there is a copy.
+    // Optimize uses of immutable globals, prefer the earlier one when there is
+    // a copy.
     NameNameMap copiedParentMap;
     for (auto& global : module->globals) {
       auto child = global->name;
@@ -595,7 +643,9 @@ struct SimplifyGlobals : public Pass {
         }
       }
       // Apply to the gets.
-      GlobalUseModifier(&copiedParentMap).run(runner, module);
+      GlobalUseModifier modifier(&copiedParentMap);
+      modifier.run(getPassRunner(), module);
+      modifier.runOnModuleCode(getPassRunner(), module);
     }
   }
 
@@ -604,27 +654,53 @@ struct SimplifyGlobals : public Pass {
   // since we do know the value during startup, it can't be modified until
   // code runs.
   void propagateConstantsToGlobals() {
-    // Go over the list of globals in order, which is the order of
-    // initialization as well, tracking their constant values.
+    Builder builder(*module);
+
+    // We will note constant globals here as we compute them.
     std::map<Name, Literals> constantGlobals;
+
+    // Given an init expression (something like the init of a global or a
+    // segment), see if it is a simple global.get of a constant that we can
+    // apply.
+    auto applyGlobals = [&](Expression*& init) {
+      if (!init) {
+        // This is the init of a passive segment, which is null.
+        return;
+      }
+      for (auto** getp : FindAllPointers<GlobalGet>(init).list) {
+        auto* get = (*getp)->cast<GlobalGet>();
+        auto iter = constantGlobals.find(get->name);
+        if (iter != constantGlobals.end()) {
+          *getp = builder.makeConstantExpression(iter->second);
+        }
+      }
+    };
+
+    // Go over the list of globals first, and note their constant values as we
+    // go, as well as applying them where possible.
     for (auto& global : module->globals) {
       if (!global->imported()) {
+        // Apply globals to this value, which may turn it into a constant we can
+        // further propagate, or it may already have been one.
+        applyGlobals(global->init);
         if (Properties::isConstantExpression(global->init)) {
           constantGlobals[global->name] =
             getLiteralsFromConstExpression(global->init);
-        } else if (auto* get = global->init->dynCast<GlobalGet>()) {
-          auto iter = constantGlobals.find(get->name);
-          if (iter != constantGlobals.end()) {
-            Builder builder(*module);
-            global->init = builder.makeConstantExpression(iter->second);
-          }
         }
       }
+    }
+
+    // Go over other things with inits and apply globals there.
+    for (auto& elementSegment : module->elementSegments) {
+      applyGlobals(elementSegment->offset);
+    }
+    for (auto& dataSegment : module->dataSegments) {
+      applyGlobals(dataSegment->offset);
     }
   }
 
   // Constant propagation part 2: apply the values of immutable globals
-  // with constant values to to global.gets in the code.
+  // with constant values to global.gets in the code.
   void propagateConstantsToCode() {
     NameSet constantGlobals;
     for (auto& global : module->globals) {
@@ -633,7 +709,74 @@ struct SimplifyGlobals : public Pass {
         constantGlobals.insert(global->name);
       }
     }
-    ConstantGlobalApplier(&constantGlobals, optimize).run(runner, module);
+    ConstantGlobalApplier(&constantGlobals, optimize)
+      .run(getPassRunner(), module);
+    // Note that we don't need to run on module code here, since we already
+    // handle applying constants in globals in propagateConstantsToGlobals (and
+    // in a more sophisticated manner, which takes into account that no sets of
+    // globals are possible during global instantiation).
+  }
+
+  // If we have a global that has a single use in the entire program, we can
+  // fold it into that use, if it is global. For example:
+  //
+  //  var x = { foo: 5 };
+  //  var y = { bar: x };
+  //
+  // This can become:
+  //
+  //  var y = { bar: { foo: 5 } };
+  //
+  // If there is more than one use, or the use is in a function (where it might
+  // execute more than once) then we can't do this.
+  void foldSingleUses() {
+    struct Folder : public PostWalker<Folder> {
+      Module& wasm;
+      GlobalInfoMap& infos;
+
+      Folder(Module& wasm, GlobalInfoMap& infos) : wasm(wasm), infos(infos) {}
+
+      void visitGlobalGet(GlobalGet* curr) {
+        // If this is a get of a global with a single get and no sets, then we
+        // can fold that code into here.
+        auto name = curr->name;
+        auto& info = infos[name];
+        if (info.written == 0 && info.read == 1) {
+          auto* global = wasm.getGlobal(name);
+          if (global->init) {
+            // Copy that global's code. For simplicity we copy it as we have to
+            // keep that global valid for the operations that happen after us,
+            // even though that global will be removed later (we could remove it
+            // here, but it would add more complexity than seems worth it).
+            replaceCurrent(ExpressionManipulator::copy(global->init, wasm));
+
+            // Update info for later parts of this pass: we are removing a
+            // global.get, which is a read, so now there are 0 reads (we also
+            // have 0 writes, so no other work is needed here, but update to
+            // avoid confusion when debugging, and for possible future changes).
+            info.read = 0;
+          }
+        }
+      }
+    };
+
+    Folder folder(*module, map);
+
+    for (auto& global : module->globals) {
+      if (global->init) {
+        folder.walk(global->init);
+      }
+    }
+  }
+};
+
+// A pass mainly useful for testing that only performs the operation to
+// propagate constant values between globals.
+struct PropagateGlobalsGlobally : public SimplifyGlobals {
+  void run(Module* module_) override {
+    module = module_;
+
+    propagateConstantsToGlobals();
   }
 };
 
@@ -641,6 +784,10 @@ Pass* createSimplifyGlobalsPass() { return new SimplifyGlobals(false); }
 
 Pass* createSimplifyGlobalsOptimizingPass() {
   return new SimplifyGlobals(true);
+}
+
+Pass* createPropagateGlobalsGloballyPass() {
+  return new PropagateGlobalsGlobally();
 }
 
 } // namespace wasm

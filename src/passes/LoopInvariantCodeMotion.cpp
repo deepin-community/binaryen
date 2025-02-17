@@ -37,20 +37,23 @@ struct LoopInvariantCodeMotion
   : public WalkerPass<ExpressionStackWalker<LoopInvariantCodeMotion>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new LoopInvariantCodeMotion; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<LoopInvariantCodeMotion>();
+  }
 
-  typedef std::unordered_set<LocalSet*> LoopSets;
+  using LoopSets = std::unordered_set<LocalSet*>;
 
   // main entry point
 
-  LocalGraph* localGraph;
+  LazyLocalGraph* localGraph;
 
   void doWalkFunction(Function* func) {
-    // Compute all local dependencies first.
-    LocalGraph localGraphInstance(func);
+    // Prepare to compute the local dependencies we care about. We may only need
+    // very few, so use a lazy LocalGraph.
+    LazyLocalGraph localGraphInstance(func, getModule());
     localGraph = &localGraphInstance;
     // Traverse the function.
-    super::doWalkFunction(func);
+    Super::doWalkFunction(func);
   }
 
   void visitLoop(Loop* loop) {
@@ -226,7 +229,7 @@ struct LoopInvariantCodeMotion
   bool hasGetDependingOnLoopSet(Expression* curr, LoopSets& loopSets) {
     FindAll<LocalGet> gets(curr);
     for (auto* get : gets.list) {
-      auto& sets = localGraph->getSetses[get];
+      auto& sets = localGraph->getSets(get);
       for (auto* set : sets) {
         // nullptr means a parameter or zero-init value;
         // no danger to us.

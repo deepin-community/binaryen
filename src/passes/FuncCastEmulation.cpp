@@ -62,13 +62,6 @@ static Expression* toABI(Expression* value, Module* module) {
     case Type::v128: {
       WASM_UNREACHABLE("v128 not implemented yet");
     }
-    case Type::funcref:
-    case Type::anyref:
-    case Type::eqref:
-    case Type::i31ref:
-    case Type::dataref: {
-      WASM_UNREACHABLE("reference types cannot be converted to i64");
-    }
     case Type::none: {
       // the value is none, but we need a value here
       value =
@@ -107,13 +100,6 @@ static Expression* fromABI(Expression* value, Type type, Module* module) {
     case Type::v128: {
       WASM_UNREACHABLE("v128 not implemented yet");
     }
-    case Type::funcref:
-    case Type::anyref:
-    case Type::eqref:
-    case Type::i31ref:
-    case Type::dataref: {
-      WASM_UNREACHABLE("reference types cannot be converted from i64");
-    }
     case Type::none: {
       value = builder.makeDrop(value);
       break;
@@ -130,8 +116,8 @@ struct ParallelFuncCastEmulation
   : public WalkerPass<PostWalker<ParallelFuncCastEmulation>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override {
-    return new ParallelFuncCastEmulation(ABIType, numParams);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<ParallelFuncCastEmulation>(ABIType, numParams);
   }
 
   ParallelFuncCastEmulation(HeapType ABIType, Index numParams)
@@ -165,9 +151,13 @@ private:
 };
 
 struct FuncCastEmulation : public Pass {
-  void run(PassRunner* runner, Module* module) override {
-    Index numParams =
-      std::stoul(runner->options.getArgumentOrDefault("max-func-params", "16"));
+  // Changes the ABI, which alters which indirect calls will trap (normally,
+  // this should prevent traps, but it depends on code this is linked to at
+  // runtime in the case of dynamic linking etc.).
+  bool addsEffects() override { return true; }
+
+  void run(Module* module) override {
+    Index numParams = std::stoul(getArgumentOrDefault("max-func-params", "16"));
     // we just need the one ABI function type for all indirect calls
     HeapType ABIType(
       Signature(Type(std::vector<Type>(numParams, Type::i64)), Type::i64));
@@ -185,13 +175,13 @@ struct FuncCastEmulation : public Pass {
     });
 
     // update call_indirects
-    ParallelFuncCastEmulation(ABIType, numParams).run(runner, module);
+    ParallelFuncCastEmulation(ABIType, numParams).run(getPassRunner(), module);
   }
 
 private:
   // Creates a thunk for a function, casting args and return value as needed.
   Name makeThunk(Name name, Module* module, Index numParams) {
-    Name thunk = std::string("byn$fpcast-emu$") + name.str;
+    Name thunk = std::string("byn$fpcast-emu$") + name.toString();
     if (module->getFunctionOrNull(thunk)) {
       Fatal() << "FuncCastEmulation::makeThunk seems a thunk name already in "
                  "use. Was the pass already run on this code?";
@@ -216,6 +206,7 @@ private:
                            Signature(Type(thunkParams), Type::i64),
                            {}, // no vars
                            toABI(call, module));
+    thunkFunc->hasExplicitName = true;
     module->addFunction(std::move(thunkFunc));
     return thunk;
   }

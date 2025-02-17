@@ -18,7 +18,7 @@
     f32ScratchView[2] = value;
   }
       
-function asmFunc(env) {
+function asmFunc(imports) {
  var buffer = new ArrayBuffer(65536);
  var HEAP8 = new Int8Array(buffer);
  var HEAP16 = new Int16Array(buffer);
@@ -38,14 +38,11 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
- function $0() {
-  var i64toi32_i32$1 = 0, i64toi32_i32$0 = 0, $0_1 = Math_fround(0);
+ function foo() {
+  var i64toi32_i32$1 = 0, i64toi32_i32$0 = 0, $0 = Math_fround(0);
   wasm2js_scratch_store_f64(+(305419896.0));
   i64toi32_i32$0 = wasm2js_scratch_load_i32(1 | 0) | 0;
-  i64toi32_i32$1 = (wasm2js_scratch_store_f32($0_1), wasm2js_scratch_load_i32(2));
+  i64toi32_i32$1 = (wasm2js_scratch_store_f32($0), wasm2js_scratch_load_i32(2));
   HEAP32[i64toi32_i32$1 >> 2] = wasm2js_scratch_load_i32(0 | 0) | 0;
   HEAP32[(i64toi32_i32$1 + 4 | 0) >> 2] = i64toi32_i32$0;
   return HEAP32[0 >> 2] | 0 | 0;
@@ -57,10 +54,10 @@ function asmFunc(env) {
  }
  
  return {
-  "foo": $0
+  "foo": foo
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var foo = retasmFunc.foo;

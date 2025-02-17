@@ -48,6 +48,10 @@ private:
 public:
   PossibleConstantValues() : value(None()) {}
 
+  bool operator==(const PossibleConstantValues& other) const {
+    return value == other.value;
+  }
+
   // Notes the contents of an expression and update our internal knowledge based
   // on it and all previous values noted.
   void note(Expression* expr, Module& wasm) {
@@ -72,22 +76,9 @@ public:
 
   // Note either a Literal or a Name.
   template<typename T> void note(T curr) {
-    if (std::get_if<None>(&value)) {
-      // This is the first value.
-      value = curr;
-      return;
-    }
-
-    if (std::get_if<Many>(&value)) {
-      // This was already representing multiple values; nothing changes.
-      return;
-    }
-
-    // This is a subsequent value. Check if it is different from all previous
-    // ones.
-    if (Variant(curr) != value) {
-      noteUnknown();
-    }
+    PossibleConstantValues other;
+    other.value = curr;
+    combine(other);
   }
 
   // Notes a value that is unknown - it can be anything. We have failed to
@@ -118,6 +109,28 @@ public:
       return true;
     }
 
+    // Nulls compare equal, and we could consider any of the input nulls as the
+    // combination of the two (as any of them would be valid to place in the
+    // location we are working to optimize). In order to have simple symmetric
+    // behavior here, which does not depend on the order of the inputs, use the
+    // LUB.
+    if (isNull() && other.isNull()) {
+      auto type = getConstantLiteral().type.getHeapType();
+      auto otherType = other.getConstantLiteral().type.getHeapType();
+      auto lub = HeapType::getLeastUpperBound(type, otherType);
+      if (!lub) {
+        // TODO: Remove this workaround once we have bottom types to assign to
+        // null literals.
+        value = Many();
+        return true;
+      }
+      if (*lub != type) {
+        value = Literal::makeNull(*lub);
+        return true;
+      }
+      return false;
+    }
+
     return false;
   }
 
@@ -129,6 +142,10 @@ public:
   bool isConstantLiteral() const { return std::get_if<Literal>(&value); }
 
   bool isConstantGlobal() const { return std::get_if<Name>(&value); }
+
+  bool isNull() const {
+    return isConstantLiteral() && getConstantLiteral().isNull();
+  }
 
   // Returns the single constant value.
   Literal getConstantLiteral() const {
@@ -142,7 +159,7 @@ public:
   }
 
   // Assuming we have a single value, make an expression containing that value.
-  Expression* makeExpression(Module& wasm) {
+  Expression* makeExpression(Module& wasm) const {
     Builder builder(wasm);
     if (isConstantLiteral()) {
       return builder.makeConstantExpression(getConstantLiteral());
@@ -155,7 +172,7 @@ public:
   // Returns whether we have ever noted a value.
   bool hasNoted() const { return !std::get_if<None>(&value); }
 
-  void dump(std::ostream& o) {
+  void dump(std::ostream& o) const {
     o << '[';
     if (!hasNoted()) {
       o << "unwritten";

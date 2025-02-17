@@ -163,10 +163,8 @@ bool ExpressionAnalyzer::flexibleEqual(Expression* left,
 
 // Create cast versions of it for later operations.
 #define DELEGATE_START(id)                                                     \
-  auto* castLeft = left->cast<id>();                                           \
-  WASM_UNUSED(castLeft);                                                       \
-  auto* castRight = right->cast<id>();                                         \
-  WASM_UNUSED(castRight);
+  [[maybe_unused]] auto* castLeft = left->cast<id>();                          \
+  [[maybe_unused]] auto* castRight = right->cast<id>();
 
 // Handle each type of field, comparing it appropriately.
 #define DELEGATE_FIELD_CHILD(id, field)                                        \
@@ -207,7 +205,9 @@ bool ExpressionAnalyzer::flexibleEqual(Expression* left,
   }
 
 #define DELEGATE_FIELD_INT_ARRAY(id, field) COMPARE_LIST(field)
+#define DELEGATE_FIELD_INT_VECTOR(id, field) COMPARE_LIST(field)
 #define DELEGATE_FIELD_NAME_VECTOR(id, field) COMPARE_LIST(field)
+#define DELEGATE_FIELD_TYPE_VECTOR(id, field) COMPARE_LIST(field)
 
 #define DELEGATE_FIELD_SCOPE_NAME_DEF(id, field)                               \
   if (castLeft->field.is() != castRight->field.is()) {                         \
@@ -304,9 +304,7 @@ struct Hasher {
 #define DELEGATE_ID curr->_id
 
 // Create cast versions of it for later operations.
-#define DELEGATE_START(id)                                                     \
-  auto* cast = curr->cast<id>();                                               \
-  WASM_UNUSED(cast);
+#define DELEGATE_START(id) [[maybe_unused]] auto* cast = curr->cast<id>();
 
 // Handle each type of field, comparing it appropriately.
 #define DELEGATE_GET_FIELD(id, field) cast->field
@@ -321,7 +319,7 @@ struct Hasher {
 #define DELEGATE_FIELD_INT(id, field) HASH_FIELD(field)
 #define DELEGATE_FIELD_LITERAL(id, field) HASH_FIELD(field)
 
-#define DELEGATE_FIELD_NAME(id, field) visitNonScopeName(cast->field)
+#define DELEGATE_FIELD_NAME(id, field) visitNonScopeName(cast->field);
 #define DELEGATE_FIELD_TYPE(id, field) visitType(cast->field);
 #define DELEGATE_FIELD_HEAPTYPE(id, field) visitHeapType(cast->field);
 #define DELEGATE_FIELD_ADDRESS(id, field) visitAddress(cast->field);
@@ -364,7 +362,7 @@ struct Hasher {
     rehash(digest, 2);
     rehash(digest, internalNames[curr]);
   }
-  void visitNonScopeName(Name curr) { rehash(digest, uint64_t(curr.str)); }
+  void visitNonScopeName(Name curr) { rehash(digest, curr); }
   void visitType(Type curr) { rehash(digest, curr.getID()); }
   void visitHeapType(HeapType curr) { rehash(digest, curr.getID()); }
   void visitAddress(Address curr) { rehash(digest, curr.addr); }

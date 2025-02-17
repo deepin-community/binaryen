@@ -31,6 +31,7 @@ struct ToolOptions : public Options {
   PassOptions passOptions;
 
   bool quiet = false;
+  bool preserveTypeOrder = false;
   IRProfile profile = IRProfile::Normal;
 
   constexpr static const char* ToolOptionsCategory = "Tool options";
@@ -89,11 +90,33 @@ struct ToolOptions : public Options {
       .addFeature(FeatureSet::Multivalue, "multivalue functions")
       .addFeature(FeatureSet::GC, "garbage collection")
       .addFeature(FeatureSet::Memory64, "memory64")
-      .addFeature(FeatureSet::TypedFunctionReferences,
-                  "typed function references")
-      .addFeature(FeatureSet::GCNNLocals, "GC non-null locals")
       .addFeature(FeatureSet::RelaxedSIMD, "relaxed SIMD")
       .addFeature(FeatureSet::ExtendedConst, "extended const expressions")
+      .addFeature(FeatureSet::Strings, "strings")
+      .addFeature(FeatureSet::MultiMemory, "multimemory")
+      .addFeature(FeatureSet::TypedContinuations, "typed continuations")
+      .addFeature(FeatureSet::SharedEverything, "shared-everything threads")
+      .addFeature(FeatureSet::FP16, "float 16 operations")
+      .add("--enable-typed-function-references",
+           "",
+           "Deprecated compatibility flag",
+           ToolOptionsCategory,
+           Options::Arguments::Zero,
+           [](Options* o, const std::string& argument) {
+             std::cerr
+               << "Warning: Typed function references have been made part of "
+                  "GC and --enable-typed-function-references is deprecated\n";
+           })
+      .add("--disable-typed-function-references",
+           "",
+           "Deprecated compatibility flag",
+           ToolOptionsCategory,
+           Options::Arguments::Zero,
+           [](Options* o, const std::string& argument) {
+             std::cerr
+               << "Warning: Typed function references have been made part of "
+                  "GC and --disable-typed-function-references is deprecated\n";
+           })
       .add("--no-validation",
            "-n",
            "Disables validation, assumes inputs are correct",
@@ -105,7 +128,10 @@ struct ToolOptions : public Options {
       .add("--pass-arg",
            "-pa",
            "An argument passed along to optimization passes being run. Must be "
-           "in the form KEY@VALUE",
+           "in the form KEY@VALUE.  If KEY is the name of a pass then it "
+           "applies to the closest instance of that pass before us. If KEY is "
+           "not the name of a pass then it is a global option that applies to "
+           "all pass instances that read it.",
            ToolOptionsCategory,
            Options::Arguments::N,
            [this](Options*, const std::string& argument) {
@@ -118,33 +144,58 @@ struct ToolOptions : public Options {
                key = argument.substr(0, colon);
                value = argument.substr(colon + 1);
              }
-             passOptions.arguments[key] = value;
+
+             addPassArg(key, value);
            })
-      .add("--nominal",
+      .add(
+        "--closed-world",
+        "-cw",
+        "Assume code outside of the module does not inspect or interact with "
+        "GC and function references, even if they are passed out. The outside "
+        "may hold on to them and pass them back in, but not inspect their "
+        "contents or call them.",
+        ToolOptionsCategory,
+        Options::Arguments::Zero,
+        [this](Options*, const std::string&) {
+          passOptions.closedWorld = true;
+        })
+      .add(
+        "--preserve-type-order",
+        "",
+        "Preserve the order of types from the input (useful for debugging and "
+        "testing)",
+        ToolOptionsCategory,
+        Options::Arguments::Zero,
+        [&](Options* o, const std::string& arguments) {
+          preserveTypeOrder = true;
+        })
+      .add("--generate-stack-ir",
            "",
-           "Force all GC type definitions to be parsed as nominal.",
+           "generate StackIR during writing",
            ToolOptionsCategory,
            Options::Arguments::Zero,
-           [](Options* o, const std::string& argument) {
-             setTypeSystem(TypeSystem::Nominal);
+           [&](Options* o, const std::string& arguments) {
+             passOptions.generateStackIR = true;
            })
-      .add("--structural",
+      .add("--optimize-stack-ir",
            "",
-           "Force all GC type definitions to be parsed as structural "
-           "(i.e. equirecursive). This is the default.",
+           "optimize StackIR during writing",
            ToolOptionsCategory,
            Options::Arguments::Zero,
-           [](Options* o, const std::string& argument) {
-             setTypeSystem(TypeSystem::Equirecursive);
+           [&](Options* o, const std::string& arguments) {
+             // Also generate StackIR, to have something to optimize.
+             passOptions.generateStackIR = true;
+             passOptions.optimizeStackIR = true;
            })
-      .add("--hybrid",
+      .add("--print-stack-ir",
            "",
-           "Force all GC type definitions to be parsed using the isorecursive "
-           "hybrid type system.",
+           "print StackIR during writing",
            ToolOptionsCategory,
            Options::Arguments::Zero,
-           [](Options* o, const std::string& argument) {
-             setTypeSystem(TypeSystem::Isorecursive);
+           [&](Options* o, const std::string& arguments) {
+             // Also generate StackIR, to have something to print.
+             passOptions.generateStackIR = true;
+             passOptions.printStackIR = &std::cout;
            });
   }
 
@@ -173,14 +224,26 @@ struct ToolOptions : public Options {
     return *this;
   }
 
-  void applyFeatures(Module& module) const {
+  void applyOptionsBeforeParse(Module& module) const {
     module.features.enable(enabledFeatures);
     module.features.disable(disabledFeatures);
   }
 
+  void applyOptionsAfterParse(Module& module) const {
+    if (!preserveTypeOrder) {
+      module.typeIndices.clear();
+    }
+  }
+
+  virtual void addPassArg(const std::string& key, const std::string& value) {
+    passOptions.arguments[key] = value;
+  }
+
+  virtual ~ToolOptions() = default;
+
 private:
-  FeatureSet enabledFeatures = FeatureSet::MVP;
-  FeatureSet disabledFeatures = FeatureSet::MVP;
+  FeatureSet enabledFeatures = FeatureSet::Default;
+  FeatureSet disabledFeatures = FeatureSet::None;
 };
 
 } // namespace wasm

@@ -33,21 +33,7 @@ public:
     : wasm(wasm), builder(wasm), stackPointerOffset(stackPointerOffset),
       useStackPointerGlobal(stackPointerOffset == 0) {}
 
-  std::string generateEmscriptenMetadata();
-
   void fixInvokeFunctionNames();
-
-  // clang uses name mangling to rename the argc/argv form of main to
-  // __main_argc_argv.  Emscripten in non-standalone mode expects that function
-  // to be exported as main.  This function renames __main_argc_argv to main
-  // as expected by emscripten.
-  void renameMainArgcArgv();
-
-  // Emits the data segments to a file. The file contains data from address base
-  // onwards (we must pass in base, as we can't tell it from the wasm - the
-  // first segment may start after a run of zeros, but we need those zeros in
-  // the file).
-  void separateDataSegments(Output* outfile, Address base);
 
   bool standalone = false;
   bool sideModule = false;

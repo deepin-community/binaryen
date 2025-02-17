@@ -18,6 +18,7 @@
 // Apply more specific subtypes to global variables where possible.
 //
 
+#include "ir/export-utils.h"
 #include "ir/find_all.h"
 #include "ir/lubs.h"
 #include "ir/module-utils.h"
@@ -31,9 +32,12 @@ namespace wasm {
 namespace {
 
 struct GlobalRefining : public Pass {
-  void run(PassRunner* runner, Module* module) override {
-    if (getTypeSystem() != TypeSystem::Nominal) {
-      Fatal() << "GlobalRefining requires nominal typing";
+  // Only modifies globals and global.get operations.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
+  void run(Module* module) override {
+    if (!module->features.hasGC()) {
+      return;
     }
 
     // First, find all the global.sets.
@@ -56,21 +60,38 @@ struct GlobalRefining : public Pass {
     // Combine all the information we gathered and compute lubs.
     for (auto& [func, info] : analysis.map) {
       for (auto* set : info.sets) {
-        lubs[set->name].noteUpdatableExpression(set->value);
+        lubs[set->name].note(set->value->type);
+      }
+    }
+
+    // In closed world we cannot change the types of exports, as we might change
+    // from a public type to a private that would cause a validation error.
+    // TODO We could refine to a type that is still public, however.
+    //
+    // We are also limited in open world: in that mode we must assume that
+    // another module might import our exported globals with the current type
+    // (that type is a contract between them), and in such a case the type of
+    // mutable globals must match precisely (the same rule as for mutable struct
+    // fields in subtypes - the types must match exactly, or else a write in
+    // one place could store a type considered in valid in another place).
+    std::unordered_set<Name> unoptimizable;
+    for (auto* global : ExportUtils::getExportedGlobals(*module)) {
+      if (getPassOptions().closedWorld || global->mutable_) {
+        unoptimizable.insert(global->name);
       }
     }
 
     bool optimized = false;
 
     for (auto& global : module->globals) {
-      if (global->imported()) {
+      if (global->imported() || unoptimizable.count(global->name)) {
         continue;
       }
 
       auto& lub = lubs[global->name];
 
       // Note the initial value.
-      lub.noteUpdatableExpression(global->init);
+      lub.note(global->init->type);
 
       // The initial value cannot be unreachable, but it might be null, and all
       // other values might be too. In that case, we've noted nothing useful
@@ -80,12 +101,11 @@ struct GlobalRefining : public Pass {
       }
 
       auto oldType = global->type;
-      auto newType = lub.getBestPossible();
+      auto newType = lub.getLUB();
       if (newType != oldType) {
         // We found an improvement!
         assert(Type::isSubType(newType, oldType));
         global->type = newType;
-        lub.updateNulls();
         optimized = true;
       }
     }
@@ -99,13 +119,18 @@ struct GlobalRefining : public Pass {
     struct GetUpdater : public WalkerPass<PostWalker<GetUpdater>> {
       bool isFunctionParallel() override { return true; }
 
+      // Only modifies global.get operations.
+      bool requiresNonNullableLocalFixups() override { return false; }
+
       GlobalRefining& parent;
       Module& wasm;
 
       GetUpdater(GlobalRefining& parent, Module& wasm)
         : parent(parent), wasm(wasm) {}
 
-      GetUpdater* create() override { return new GetUpdater(parent, wasm); }
+      std::unique_ptr<Pass> create() override {
+        return std::make_unique<GetUpdater>(parent, wasm);
+      }
 
       // If we modify anything in a function then we must refinalize so that
       // types propagate outwards.
@@ -125,8 +150,9 @@ struct GlobalRefining : public Pass {
           ReFinalize().walkFunctionInModule(curr, &wasm);
         }
       }
-    };
-    GetUpdater(*this, *module).run(runner, module);
+    } updater(*this, *module);
+    updater.run(getPassRunner(), module);
+    updater.runOnModuleCode(getPassRunner(), module);
   }
 };
 

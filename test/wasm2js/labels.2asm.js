@@ -1,5 +1,5 @@
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -10,9 +10,6 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  function $0() {
   var $0_1 = 0;
   exit : {
@@ -103,12 +100,12 @@ function asmFunc(env) {
  
  function $6() {
   var $2_1 = 0;
-  loop_in : while (1) {
+  label : while (1) {
    if (0) {
-    continue loop_in
+    continue label
    }
    $2_1 = 3;
-   break loop_in;
+   break label;
   };
   return $2_1 | 0;
  }
@@ -116,56 +113,52 @@ function asmFunc(env) {
  function $7() {
   var i = 0;
   i = 0;
-  block : {
-   l : {
-    break l;
-   }
-   i = i + 1 | 0;
-   l1 : {
-    break l1;
-   }
-   i = i + 1 | 0;
-   l2 : {
-    break l2;
-   }
-   i = i + 1 | 0;
-   l3 : {
-    break l3;
-   }
-   i = i + 1 | 0;
-   l4 : {
-    break l4;
-   }
-   i = i + 1 | 0;
+  l : {
+   break l;
   }
+  i = i + 1 | 0;
+  l0 : {
+   break l0;
+  }
+  i = i + 1 | 0;
+  l1 : {
+   break l1;
+  }
+  i = i + 1 | 0;
+  l2 : {
+   break l2;
+  }
+  i = i + 1 | 0;
+  l3 : {
+   break l3;
+  }
+  i = i + 1 | 0;
   return i | 0;
  }
  
  function $8() {
   var i = 0;
   i = 0;
-  block : {
-   if_ : {
-    break if_;
-   }
-   i = i + 1 | 0;
-   if5 : {
-    break if5;
-   }
-   i = i + 1 | 0;
-   if6 : {
-    break if6;
-   }
-   i = i + 1 | 0;
-   if7 : {
-    break if7;
-   }
-   i = i + 1 | 0;
-   if8 : {
-    break if8;
-   }
-   i = i + 1 | 0;
+  label : {
+   break label;
   }
+  i = i + 1 | 0;
+  label0 : {
+   break label0;
+  }
+  i = i + 1 | 0;
+  label1 : {
+   break label1;
+  }
+  i = i + 1 | 0;
+  label2 : {
+   break label2;
+  }
+  i = i + 1 | 0;
+  label3 : {
+   break label3;
+  }
+  i = i + 1 | 0;
   return i | 0;
  }
  
@@ -312,9 +305,9 @@ function asmFunc(env) {
   var $1_1 = 0, $2_1 = 0;
   l1 : {
    $1_1 = 2;
-   l113 : {
+   l11 : {
     $2_1 = 3;
-    break l113;
+    break l11;
    }
   }
   return $1_1 + $2_1 | 0 | 0;
@@ -342,8 +335,8 @@ function asmFunc(env) {
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var block = retasmFunc.block;
 export var loop1 = retasmFunc.loop1;
 export var loop2 = retasmFunc.loop2;

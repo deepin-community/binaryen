@@ -174,7 +174,7 @@ struct EquivalentClass {
 struct MergeSimilarFunctions : public Pass {
   bool invalidatesDWARF() override { return true; }
 
-  void run(PassRunner* runner, Module* module) override {
+  void run(Module* module) override {
     std::vector<EquivalentClass> classes;
     collectEquivalentClasses(classes, module);
     std::sort(
@@ -202,8 +202,7 @@ struct MergeSimilarFunctions : public Pass {
 
   // Parameterize direct calls if the module supports func ref values.
   bool isCallIndirectionEnabled(Module* module) const {
-    return module->features.hasReferenceTypes() &&
-           module->features.hasTypedFunctionReferences();
+    return module->features.hasReferenceTypes() && module->features.hasGC();
   }
   bool areInEquvalentClass(Function* lhs, Function* rhs, Module* module);
   void collectEquivalentClasses(std::vector<EquivalentClass>& classes,
@@ -527,8 +526,9 @@ bool EquivalentClass::hasMergeBenefit(Module* module,
 
 Function* EquivalentClass::createShared(Module* module,
                                         const std::vector<ParamInfo>& params) {
-  Name fnName = Names::getValidFunctionName(
-    *module, std::string("byn$mgfn-shared$") + primaryFunction->name.str);
+  Name fnName = Names::getValidFunctionName(*module,
+                                            std::string("byn$mgfn-shared$") +
+                                              primaryFunction->name.toString());
   Builder builder(*module);
   std::vector<Type> sigParams;
   Index extraParamBase = primaryFunction->getNumParams();
@@ -565,7 +565,9 @@ Function* EquivalentClass::createShared(Module* module,
             operands.push_back(
               ExpressionManipulator::flexibleCopy(operand, *module, copier));
           }
-          return builder.makeCallRef(paramExpr, operands, call->type);
+          auto returnType = module->getFunction(call->target)->getResults();
+          return builder.makeCallRef(
+            paramExpr, operands, returnType, call->isReturn);
         }
       }
     }
@@ -616,6 +618,7 @@ EquivalentClass::replaceWithThunk(Builder& builder,
     callOperands.push_back(value);
   }
 
+  // TODO: make a return_call when possible?
   auto ret = builder.makeCall(shared->name, callOperands, target->getResults());
   target->vars.clear();
   target->body = ret;

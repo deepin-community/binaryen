@@ -31,10 +31,13 @@
 #include <atomic>
 
 #include "ir/branch-utils.h"
-#include "ir/debug.h"
+#include "ir/debuginfo.h"
+#include "ir/drop.h"
 #include "ir/eh-utils.h"
 #include "ir/element-utils.h"
+#include "ir/find_all.h"
 #include "ir/literal-utils.h"
+#include "ir/localize.h"
 #include "ir/module-utils.h"
 #include "ir/names.h"
 #include "ir/type-updating.h"
@@ -49,6 +52,21 @@ namespace wasm {
 
 namespace {
 
+enum class InliningMode {
+  // We do not know yet if this function can be inlined, as that has
+  // not been computed yet.
+  Unknown,
+  // This function cannot be inlinined in any way.
+  Uninlineable,
+  // This function can be inlined fully, that is, normally: the entire function
+  // can be inlined. This is in contrast to split/partial inlining, see below.
+  Full,
+  // This function cannot be inlined normally, but we can use split inlining,
+  // using pattern "A" or "B" (see below).
+  SplitPatternA,
+  SplitPatternB
+};
+
 // Useful into on a function, helping us decide if we can inline it
 struct FunctionInfo {
   std::atomic<Index> refs;
@@ -56,8 +74,20 @@ struct FunctionInfo {
   bool hasCalls;
   bool hasLoops;
   bool hasTryDelegate;
-  bool usedGlobally; // in a table or export
-  bool uninlineable;
+  // Something is used globally if there is a reference to it in a table or
+  // export etc.
+  bool usedGlobally;
+  // We consider a function to be a trivial call if the body is just a call with
+  // trivial arguments, like this:
+  //
+  //  (func $forward (param $x) (param $y)
+  //    (call $target (local.get $x) (local.get $y))
+  //  )
+  //
+  // Specifically the body must be a call, and the operands to the call must be
+  // of size 1 (generally, LocalGet or Const).
+  bool isTrivialCall;
+  InliningMode inliningMode;
 
   FunctionInfo() { clear(); }
 
@@ -68,26 +98,25 @@ struct FunctionInfo {
     hasLoops = false;
     hasTryDelegate = false;
     usedGlobally = false;
-    uninlineable = false;
+    isTrivialCall = false;
+    inliningMode = InliningMode::Unknown;
   }
 
   // Provide an explicit = operator as the |refs| field lacks one by default.
-  FunctionInfo& operator=(FunctionInfo& other) {
+  FunctionInfo& operator=(const FunctionInfo& other) {
     refs = other.refs.load();
     size = other.size;
     hasCalls = other.hasCalls;
     hasLoops = other.hasLoops;
     hasTryDelegate = other.hasTryDelegate;
     usedGlobally = other.usedGlobally;
-    uninlineable = other.uninlineable;
+    isTrivialCall = other.isTrivialCall;
+    inliningMode = other.inliningMode;
     return *this;
   }
 
   // See pass.h for how defaults for these options were chosen.
-  bool worthInlining(PassOptions& options) {
-    if (uninlineable) {
-      return false;
-    }
+  bool worthFullInlining(PassOptions& options) {
     // Until we have proper support for try-delegate, ignore such functions.
     // FIXME https://github.com/WebAssembly/binaryen/issues/3634
     if (hasTryDelegate) {
@@ -108,16 +137,28 @@ struct FunctionInfo {
     if (size > options.inlining.flexibleInlineMaxSize) {
       return false;
     }
-    // More than one use, so we can't eliminate it after inlining,
-    // so only worth it if we really care about speed and don't care
-    // about size. First, check if it has calls. In that case it is not
-    // likely to speed us up, and also if we want to inline such
-    // functions we would need to be careful to avoid infinite recursion.
-    if (hasCalls) {
+    // More than one use, so we can't eliminate it after inlining, and inlining
+    // it will hurt code size. Stop if we are focused on size or not heavily
+    // focused on speed.
+    if (options.shrinkLevel > 0 || options.optimizeLevel < 3) {
       return false;
     }
-    return options.optimizeLevel >= 3 && options.shrinkLevel == 0 &&
-           (!hasLoops || options.inlining.allowFunctionsWithLoops);
+    if (hasCalls) {
+      // This has calls. If it is just a trivial call itself then inline, as we
+      // will save a call that way - basically we skip a trampoline in the
+      // middle - but if it is something more complex, leave it alone, as we may
+      // not help much (and with recursion we may end up with a wasteful
+      // increase in code size).
+      //
+      // Note that inlining trivial calls may increase code size, e.g. if they
+      // use a parameter more than once (forcing us after inlining to save that
+      // value to a local, etc.), but here we are optimizing for speed and not
+      // size, so we risk it.
+      return isTrivialCall;
+    }
+    // This doesn't have calls. Inline if loops do not prevent us (normally, a
+    // loop suggests a lot of work and so inlining is less useful).
+    return !hasLoops || options.inlining.allowFunctionsWithLoops;
   }
 };
 
@@ -132,29 +173,29 @@ static bool canHandleParams(Function* func) {
   return true;
 }
 
-typedef std::unordered_map<Name, FunctionInfo> NameInfoMap;
+using NameInfoMap = std::unordered_map<Name, FunctionInfo>;
 
 struct FunctionInfoScanner
   : public WalkerPass<PostWalker<FunctionInfoScanner>> {
   bool isFunctionParallel() override { return true; }
 
-  FunctionInfoScanner(NameInfoMap* infos) : infos(infos) {}
+  FunctionInfoScanner(NameInfoMap& infos) : infos(infos) {}
 
-  FunctionInfoScanner* create() override {
-    return new FunctionInfoScanner(infos);
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<FunctionInfoScanner>(infos);
   }
 
   void visitLoop(Loop* curr) {
     // having a loop
-    (*infos)[getFunction()->name].hasLoops = true;
+    infos[getFunction()->name].hasLoops = true;
   }
 
   void visitCall(Call* curr) {
     // can't add a new element in parallel
-    assert(infos->count(curr->target) > 0);
-    (*infos)[curr->target].refs++;
+    assert(infos.count(curr->target) > 0);
+    infos[curr->target].refs++;
     // having a call
-    (*infos)[getFunction()->name].hasCalls = true;
+    infos[getFunction()->name].hasCalls = true;
   }
 
   // N.B.: CallIndirect and CallRef are intentionally omitted here, as we only
@@ -167,49 +208,71 @@ struct FunctionInfoScanner
 
   void visitTry(Try* curr) {
     if (curr->isDelegate()) {
-      (*infos)[getFunction()->name].hasTryDelegate = true;
+      infos[getFunction()->name].hasTryDelegate = true;
     }
   }
 
   void visitRefFunc(RefFunc* curr) {
-    assert(infos->count(curr->func) > 0);
-    (*infos)[curr->func].refs++;
+    assert(infos.count(curr->func) > 0);
+    infos[curr->func].refs++;
   }
 
   void visitFunction(Function* curr) {
-    auto& info = (*infos)[curr->name];
+    auto& info = infos[curr->name];
 
     if (!canHandleParams(curr)) {
-      info.uninlineable = true;
+      info.inliningMode = InliningMode::Uninlineable;
     }
 
     info.size = Measurer::measure(curr->body);
+
+    if (auto* call = curr->body->dynCast<Call>()) {
+      if (info.size == call->operands.size() + 1) {
+        // This function body is a call with some trivial (size 1) operands like
+        // LocalGet or Const, so it is a trivial call.
+        info.isTrivialCall = true;
+      }
+    }
   }
 
 private:
-  NameInfoMap* infos;
+  NameInfoMap& infos;
 };
 
 struct InliningAction {
   Expression** callSite;
   Function* contents;
+  bool insideATry;
 
-  InliningAction(Expression** callSite, Function* contents)
-    : callSite(callSite), contents(contents) {}
+  // An optional name hint can be provided, which will then be used in the name
+  // of the block we put the inlined code in. Using a unique name hint in each
+  // inlining can reduce the risk of name overlaps (which cause fixup work in
+  // UniqueNameMapper::uniquify).
+  Index nameHint = 0;
+
+  InliningAction(Expression** callSite,
+                 Function* contents,
+                 bool insideATry,
+                 Index nameHint = 0)
+    : callSite(callSite), contents(contents), insideATry(insideATry),
+      nameHint(nameHint) {}
 };
 
 struct InliningState {
-  std::unordered_set<Name> worthInlining;
+  // Maps functions worth inlining to the mode with which we can inline them.
+  std::unordered_map<Name, InliningMode> inlinableFunctions;
   // function name => actions that can be performed in it
   std::unordered_map<Name, std::vector<InliningAction>> actionsForFunction;
 };
 
-struct Planner : public WalkerPass<PostWalker<Planner>> {
+struct Planner : public WalkerPass<TryDepthWalker<Planner>> {
   bool isFunctionParallel() override { return true; }
 
   Planner(InliningState* state) : state(state) {}
 
-  Planner* create() override { return new Planner(state); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<Planner>(state);
+  }
 
   void visitCall(Call* curr) {
     // plan to inline if we know this is valid to inline, and if the call is
@@ -225,17 +288,14 @@ struct Planner : public WalkerPass<PostWalker<Planner>> {
     } else {
       isUnreachable = curr->type == Type::unreachable;
     }
-    if (state->worthInlining.count(curr->target) && !isUnreachable &&
+    if (state->inlinableFunctions.count(curr->target) && !isUnreachable &&
         curr->target != getFunction()->name) {
-      // nest the call in a block. that way the location of the pointer to the
-      // call will not change even if we inline multiple times into the same
-      // function, otherwise call1(call2()) might be a problem
-      auto* block = Builder(*getModule()).makeBlock(curr);
-      replaceCurrent(block);
       // can't add a new element in parallel
       assert(state->actionsForFunction.count(getFunction()->name) > 0);
       state->actionsForFunction[getFunction()->name].emplace_back(
-        &block->list[0], getModule()->getFunction(curr->target));
+        getCurrentPointer(),
+        getModule()->getFunction(curr->target),
+        tryDepth > 0);
     }
   }
 
@@ -243,22 +303,38 @@ private:
   InliningState* state;
 };
 
-struct Updater : public PostWalker<Updater> {
+struct Updater : public TryDepthWalker<Updater> {
   Module* module;
   std::map<Index, Index> localMapping;
   Name returnName;
+  Type resultType;
   bool isReturn;
   Builder* builder;
+  PassOptions& options;
+
+  struct ReturnCallInfo {
+    // The original `return_call` or `return_call_indirect` or `return_call_ref`
+    // with its operands replaced with `local.get`s.
+    Expression* call;
+    // The branch that is serving as the "return" part of the original
+    // `return_call`.
+    Break* branch;
+  };
+
+  // Collect information on return_calls in the inlined body. Each will be
+  // turned into branches out of the original inlined body followed by
+  // non-return version of the original `return_call`, followed by a branch out
+  // to the caller. The branch labels will be filled in at the end of the walk.
+  std::vector<ReturnCallInfo> returnCallInfos;
+
+  Updater(PassOptions& options) : options(options) {}
+
   void visitReturn(Return* curr) {
     replaceCurrent(builder->makeBreak(returnName, curr->value));
   }
-  // Return calls in inlined functions should only break out of the scope of
-  // the inlined code, not the entire function they are being inlined into. To
-  // achieve this, make the call a non-return call and add a break. This does
-  // not cause unbounded stack growth because inlining and return calling both
-  // avoid creating a new stack frame.
-  template<typename T> void handleReturnCall(T* curr, HeapType targetType) {
-    if (isReturn) {
+
+  template<typename T> void handleReturnCall(T* curr, Signature sig) {
+    if (isReturn || !curr->isReturn) {
       // If the inlined callsite was already a return_call, then we can keep
       // return_calls in the inlined function rather than downgrading them.
       // That is, if A->B and B->C and both those calls are return_calls
@@ -266,48 +342,127 @@ struct Updater : public PostWalker<Updater> {
       // return_call.
       return;
     }
-    curr->isReturn = false;
-    curr->type = targetType.getSignature().results;
-    if (curr->type.isConcrete()) {
-      replaceCurrent(builder->makeBreak(returnName, curr));
+
+    if (tryDepth == 0) {
+      // Return calls in inlined functions should only break out of
+      // the scope of the inlined code, not the entire function they
+      // are being inlined into. To achieve this, make the call a
+      // non-return call and add a break. This does not cause
+      // unbounded stack growth because inlining and return calling
+      // both avoid creating a new stack frame.
+      curr->isReturn = false;
+      curr->type = sig.results;
+      // There might still be unreachable children causing this to be
+      // unreachable.
+      curr->finalize();
+      if (sig.results.isConcrete()) {
+        replaceCurrent(builder->makeBreak(returnName, curr));
+      } else {
+        replaceCurrent(builder->blockify(curr, builder->makeBreak(returnName)));
+      }
     } else {
-      replaceCurrent(builder->blockify(curr, builder->makeBreak(returnName)));
+      // Set the children to locals as necessary, then add a branch out of the
+      // inlined body. The branch label will be set later when we create branch
+      // targets for the calls.
+      Block* childBlock = ChildLocalizer(curr, getFunction(), *module, options)
+                            .getChildrenReplacement();
+      Break* branch = builder->makeBreak(Name());
+      childBlock->list.push_back(branch);
+      childBlock->type = Type::unreachable;
+      replaceCurrent(childBlock);
+
+      curr->isReturn = false;
+      curr->type = sig.results;
+      returnCallInfos.push_back({curr, branch});
     }
   }
+
   void visitCall(Call* curr) {
-    if (curr->isReturn) {
-      handleReturnCall(curr, module->getFunction(curr->target)->type);
-    }
+    handleReturnCall(curr, module->getFunction(curr->target)->getSig());
   }
+
   void visitCallIndirect(CallIndirect* curr) {
-    if (curr->isReturn) {
-      handleReturnCall(curr, curr->heapType);
-    }
+    handleReturnCall(curr, curr->heapType.getSignature());
   }
+
   void visitCallRef(CallRef* curr) {
-    if (curr->isReturn) {
-      handleReturnCall(curr, curr->target->type.getHeapType());
+    Type targetType = curr->target->type;
+    if (!targetType.isSignature()) {
+      // We don't know what type the call should return, but it will also never
+      // be reached, so we don't need to do anything here.
+      return;
     }
+    handleReturnCall(curr, targetType.getHeapType().getSignature());
   }
+
   void visitLocalGet(LocalGet* curr) {
     curr->index = localMapping[curr->index];
   }
+
   void visitLocalSet(LocalSet* curr) {
     curr->index = localMapping[curr->index];
+  }
+
+  void walk(Expression*& curr) {
+    PostWalker<Updater>::walk(curr);
+    if (returnCallInfos.empty()) {
+      return;
+    }
+
+    Block* body = builder->blockify(curr);
+    curr = body;
+    auto blockNames = BranchUtils::BranchAccumulator::get(body);
+
+    for (Index i = 0; i < returnCallInfos.size(); ++i) {
+      auto& info = returnCallInfos[i];
+
+      // Add a block containing the previous body and a branch up to the caller.
+      // Give the block a name that will allow this return_call's original
+      // callsite to branch out of it then execute the call before returning to
+      // the caller.
+      auto name = Names::getValidName(
+        "__return_call", [&](Name test) { return !blockNames.count(test); }, i);
+      blockNames.insert(name);
+      info.branch->name = name;
+      Block* oldBody = builder->makeBlock(body->list, body->type);
+      body->list.clear();
+
+      if (resultType.isConcrete()) {
+        body->list.push_back(builder->makeBlock(
+          name, {builder->makeBreak(returnName, oldBody)}, Type::none));
+      } else {
+        oldBody->list.push_back(builder->makeBreak(returnName));
+        oldBody->name = name;
+        oldBody->type = Type::none;
+        body->list.push_back(oldBody);
+      }
+      body->list.push_back(info.call);
+      body->finalize(resultType);
+    }
   }
 };
 
 // Core inlining logic. Modifies the outside function (adding locals as
-// needed), and returns the inlined code.
-static Expression*
-doInlining(Module* module, Function* into, const InliningAction& action) {
+// needed) by copying the inlined code into it.
+static void doCodeInlining(Module* module,
+                           Function* into,
+                           const InliningAction& action,
+                           PassOptions& options) {
   Function* from = action.contents;
   auto* call = (*action.callSite)->cast<Call>();
+
   // Works for return_call, too
   Type retType = module->getFunction(call->target)->getResults();
+
+  // Build the block that will contain the inlined contents.
   Builder builder(*module);
   auto* block = builder.makeBlock();
-  block->name = Name(std::string("__inlined_func$") + from->name.str);
+  auto name = std::string("__inlined_func$") + from->name.toString();
+  if (action.nameHint) {
+    name += '$' + std::to_string(action.nameHint);
+  }
+  block->name = Name(name);
+
   // In the unlikely event that the function already has a branch target with
   // this name, fix that up, as otherwise we can get unexpected capture of our
   // branches, that is, we could end up with this:
@@ -319,24 +474,36 @@ doInlining(Module* module, Function* into, const InliningAction& action) {
   //
   // Here the br wants to go to the very outermost block, to represent a
   // return from the inlined function's code, but it ends up captured by an
-  // internal block.
-  if (BranchUtils::hasBranchTarget(from->body, block->name)) {
-    auto existingNames = BranchUtils::getBranchTargets(from->body);
-    block->name = Names::getValidName(
-      block->name, [&](Name test) { return !existingNames.count(test); });
+  // internal block. We also need to be careful of the call's children:
+  //
+  //  (block $X             ;; a new block we add as the target of returns
+  //    (local.set $param
+  //      (call's first parameter
+  //        (br $X)         ;; nested br in call's first parameter
+  //      )
+  //    )
+  //
+  // (In this case we could use a second block and define the named block $X
+  // after the call's parameters, but that adds work for an extremely rare
+  // situation.) The latter case does not apply if the call is a
+  // return_call inside a try, because in that case the call's
+  // children do not appear inside the same block as the inlined body.
+  bool hoistCall = call->isReturn && action.insideATry;
+  if (BranchUtils::hasBranchTarget(from->body, block->name) ||
+      (!hoistCall && BranchUtils::BranchSeeker::has(call, block->name))) {
+    auto fromNames = BranchUtils::getBranchTargets(from->body);
+    auto callNames = hoistCall ? BranchUtils::NameSet{}
+                               : BranchUtils::BranchAccumulator::get(call);
+    block->name = Names::getValidName(block->name, [&](Name test) {
+      return !fromNames.count(test) && !callNames.count(test);
+    });
   }
-  if (call->isReturn) {
-    if (retType.isConcrete()) {
-      *action.callSite = builder.makeReturn(block);
-    } else {
-      *action.callSite = builder.makeSequence(block, builder.makeReturn());
-    }
-  } else {
-    *action.callSite = block;
-  }
+
   // Prepare to update the inlined code's locals and other things.
-  Updater updater;
+  Updater updater(options);
+  updater.setFunction(into);
   updater.module = module;
+  updater.resultType = from->getResults();
   updater.returnName = block->name;
   updater.isReturn = call->isReturn;
   updater.builder = &builder;
@@ -344,45 +511,175 @@ doInlining(Module* module, Function* into, const InliningAction& action) {
   for (Index i = 0; i < from->getNumLocals(); i++) {
     updater.localMapping[i] = builder.addVar(into, from->getLocalType(i));
   }
-  // Assign the operands into the params
-  for (Index i = 0; i < from->getParams().size(); i++) {
-    block->list.push_back(
-      builder.makeLocalSet(updater.localMapping[i], call->operands[i]));
-  }
-  // Zero out the vars (as we may be in a loop, and may depend on their
-  // zero-init value
-  for (Index i = 0; i < from->vars.size(); i++) {
-    auto type = from->vars[i];
-    if (!LiteralUtils::canMakeZero(type)) {
-      // Non-zeroable locals do not need to be zeroed out. As they have no zero
-      // value they by definition should not be used before being written to, so
-      // any value we set here would not be observed anyhow.
-      continue;
+
+  if (hoistCall) {
+    // Wrap the existing function body in a block we can branch out of before
+    // entering the inlined function body. This block must have a name that is
+    // different from any other block name above the branch.
+    auto intoNames = BranchUtils::BranchAccumulator::get(into->body);
+    auto bodyName =
+      Names::getValidName(Name("__original_body"),
+                          [&](Name test) { return !intoNames.count(test); });
+    if (retType.isConcrete()) {
+      into->body = builder.makeBlock(
+        bodyName, {builder.makeReturn(into->body)}, Type::none);
+    } else {
+      into->body = builder.makeBlock(
+        bodyName, {into->body, builder.makeReturn()}, Type::none);
     }
-    block->list.push_back(
-      builder.makeLocalSet(updater.localMapping[from->getVarIndexBase() + i],
-                           LiteralUtils::makeZero(type, *module)));
+
+    // Sequence the inlined function body after the original caller body.
+    into->body = builder.makeSequence(into->body, block, retType);
+
+    // Replace the original callsite with an expression that assigns the
+    // operands into the params and branches out of the original body.
+    auto numParams = from->getParams().size();
+    if (numParams) {
+      auto* branchBlock = builder.makeBlock();
+      for (Index i = 0; i < numParams; i++) {
+        branchBlock->list.push_back(
+          builder.makeLocalSet(updater.localMapping[i], call->operands[i]));
+      }
+      branchBlock->list.push_back(builder.makeBreak(bodyName));
+      branchBlock->finalize(Type::unreachable);
+      *action.callSite = branchBlock;
+    } else {
+      *action.callSite = builder.makeBreak(bodyName);
+    }
+  } else {
+    // Assign the operands into the params
+    for (Index i = 0; i < from->getParams().size(); i++) {
+      block->list.push_back(
+        builder.makeLocalSet(updater.localMapping[i], call->operands[i]));
+    }
+    // Zero out the vars (as we may be in a loop, and may depend on their
+    // zero-init value
+    for (Index i = 0; i < from->vars.size(); i++) {
+      auto type = from->vars[i];
+      if (!LiteralUtils::canMakeZero(type)) {
+        // Non-zeroable locals do not need to be zeroed out. As they have no
+        // zero value they by definition should not be used before being written
+        // to, so any value we set here would not be observed anyhow.
+        continue;
+      }
+      block->list.push_back(
+        builder.makeLocalSet(updater.localMapping[from->getVarIndexBase() + i],
+                             LiteralUtils::makeZero(type, *module)));
+    }
+    if (call->isReturn) {
+      assert(!action.insideATry);
+      if (retType.isConcrete()) {
+        *action.callSite = builder.makeReturn(block);
+      } else {
+        *action.callSite = builder.makeSequence(block, builder.makeReturn());
+      }
+    } else {
+      *action.callSite = block;
+    }
   }
+
   // Generate and update the inlined contents
   auto* contents = ExpressionManipulator::copy(from->body, *module);
-  if (!from->debugLocations.empty()) {
-    debug::copyDebugInfo(from->body, contents, from, into);
-  }
+  debuginfo::copyBetweenFunctions(from->body, contents, from, into);
   updater.walk(contents);
   block->list.push_back(contents);
   block->type = retType;
-  // If the function returned a value, we just set the block containing the
-  // inlined code to have that type. or, if the function was void and
-  // contained void, that is fine too. a bad case is a void function in which
-  // we have unreachable code, so we would be replacing a void call with an
-  // unreachable.
-  if (contents->type == Type::unreachable && block->type == Type::none) {
-    // Make the block reachable by adding a break to it
-    block->list.push_back(builder.makeBreak(block->name));
+
+  // The ReFinalize below will handle propagating unreachability if we need to
+  // do so, that is, if the call was reachable but now the inlined content we
+  // replaced it with was unreachable. The opposite case requires special
+  // handling: ReFinalize works under the assumption that code can become
+  // unreachable, but it does not go back from that state. But inlining can
+  // cause that:
+  //
+  //  (call $A                               ;; an unreachable call
+  //    (unreachable)
+  //  )
+  // =>
+  //  (block $__inlined_A_body (result i32)  ;; reachable code after inlining
+  //    (unreachable)
+  //  )
+  //
+  // That is, if the called function wraps the input parameter in a block with a
+  // declared type, then the block is not unreachable. And then we might error
+  // if the outside expects the code to be unreachable - perhaps it only
+  // validates that way. To fix this, if the call was unreachable then we make
+  // the inlined code unreachable as well. That also maximizes DCE
+  // opportunities by propagating unreachability as much as possible.
+  //
+  // (Note that we don't need to do this for a return_call, which is always
+  // unreachable anyhow.)
+  if (call->type == Type::unreachable && !call->isReturn) {
+    // Make the replacement code unreachable. Note that we can't just add an
+    // unreachable at the end, as the block might have breaks to it (returns are
+    // transformed into those).
+    Expression* old = block;
+    if (old->type.isConcrete()) {
+      old = builder.makeDrop(old);
+    }
+    *action.callSite = builder.makeSequence(old, builder.makeUnreachable());
   }
-  TypeUpdating::handleNonDefaultableLocals(into, *module);
-  return block;
 }
+
+// Updates the outer function after we inline into it. This is a general
+// operation that does not depend on what we inlined, it just makes sure that we
+// refinalize everything, have no duplicate break labels, etc.
+static void updateAfterInlining(Module* module, Function* into) {
+  // Anything we inlined into may now have non-unique label names, fix it up.
+  // Note that we must do this before refinalization, as otherwise duplicate
+  // block labels can lead to errors (the IR must be valid before we
+  // refinalize).
+  wasm::UniqueNameMapper::uniquify(into->body);
+  // Inlining unreachable contents can make things in the function we inlined
+  // into unreachable.
+  ReFinalize().walkFunctionInModule(into, module);
+  // New locals we added may require fixups for nondefaultability.
+  // FIXME Is this not done automatically?
+  TypeUpdating::handleNonDefaultableLocals(into, *module);
+}
+
+static void doInlining(Module* module,
+                       Function* into,
+                       const InliningAction& action,
+                       PassOptions& options) {
+  doCodeInlining(module, into, action, options);
+  updateAfterInlining(module, into);
+}
+
+// A map of function names to the inlining actions we've decided to actually
+// perform in them.
+using ChosenActions = std::unordered_map<Name, std::vector<InliningAction>>;
+
+// A pass that calls doInlining() on a bunch of actions that were chosen to
+// perform.
+struct DoInlining : public Pass {
+  bool isFunctionParallel() override { return true; }
+
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<DoInlining>(chosenActions);
+  }
+
+  DoInlining(const ChosenActions& chosenActions)
+    : chosenActions(chosenActions) {}
+
+  void runOnFunction(Module* module, Function* func) override {
+    auto iter = chosenActions.find(func->name);
+    // We must be called on a function that we actually want to inline into.
+    assert(iter != chosenActions.end());
+    const auto& actions = iter->second;
+    assert(!actions.empty());
+
+    // Inline all the code first, then update func once at the end (which saves
+    // e.g. running ReFinalize after each action, of which there might be many).
+    for (auto action : actions) {
+      doCodeInlining(module, func, action, getPassOptions());
+    }
+    updateAfterInlining(module, func);
+  }
+
+private:
+  const ChosenActions& chosenActions;
+};
 
 //
 // Function splitting / partial inlining / inlining of conditions.
@@ -466,104 +763,62 @@ struct FunctionSplitter {
   // Check if an function could be split in order to at least inline part of it,
   // in a worthwhile manner.
   //
-  // Even if this returns true, we may not end up inlining the function, as the
-  // main inlining logic has a few other considerations to take into account
-  // (like limitations on which functions can be inlined into in each iteration,
-  // the number of iterations, etc.). Therefore this function will only find out
-  // if we *can* split, but not actually do any splitting.
-  bool canSplit(Function* func) {
-    if (!canHandleParams(func)) {
-      return false;
-    }
-
-    return maybeSplit(func);
-  }
-
-  // Returns the function we should inline, after we split the function into two
-  // pieces as described above (that is, in the example above, this would return
-  // foo$inlineable).
+  // Even if this returns a split inlining mode, we may not end up inlining the
+  // function, as the main inlining logic has a few other considerations to take
+  // into account (like limitations on which functions can be inlined into in
+  // each iteration, the number of iterations, etc.). Therefore this function
+  // may only find out if we *can* split, but not actually do any splitting.
   //
-  // This is called when we are definitely inlining the function, and so it will
-  // perform the splitting (if that has not already been done before).
-  Function* getInlineableSplitFunction(Function* func) {
-    Function* inlineable = nullptr;
-    auto success = maybeSplit(func, &inlineable);
-    WASM_UNUSED(success);
-    assert(success && inlineable);
-    return inlineable;
-  }
-
-  // Clean up. When we are done we no longer need the inlineable functions on
-  // the module, as they have been inlined into all the places we wanted them
-  // for.
+  // Note that to avoid wasteful work, this function may return "Full" inlining
+  // mode instead of a split inlining. That is, if it detects that a partial
+  // inlining will trigger a follow up full inline of the splitted function
+  // then it will instead return "InliningMode::Full" directly. In more detail,
+  // imagine we have
   //
-  // Returns a list of the names of the functions we split.
-  std::vector<Name> finish() {
-    std::vector<Name> ret;
-    std::unordered_set<Name> inlineableNames;
-    for (auto& [func, split] : splits) {
-      auto* inlineable = split.inlineable;
-      if (inlineable) {
-        inlineableNames.insert(inlineable->name);
-        ret.push_back(func);
-      }
-    }
-    module->removeFunctions([&](Function* func) {
-      return inlineableNames.find(func->name) != inlineableNames.end();
-    });
-    return ret;
-  }
-
-private:
-  // Information about splitting a function.
-  struct Split {
-    // Whether we can split the function. If this is false, the other two will
-    // remain nullptr forever; if this is true then we will populate them the
-    // first time we need them.
-    bool splittable = false;
-
-    // The inlineable function out of the two that we generate by splitting.
-    // That is, foo$inlineable from above.
-    Function* inlineable = nullptr;
-
-    // The outlined function, that is, foo$outlined from above.
-    Function* outlined = nullptr;
-  };
-
-  // All the splitting we have already performed.
+  //   foo(10);
   //
-  // Note that this maps from function names, and not Function*, as the main
-  // inlining code can remove functions as it goes, but we can rely on names
-  // staying constant.
-  std::unordered_map<Name, Split> splits;
-
-  // Check if we can split a function. Returns whether we can. If the out param
-  // is provided, also actually does the split, and returns the inlineable split
-  // function in that out param.
-  bool maybeSplit(Function* func, Function** inlineableOut = nullptr) {
-    // Check if we've processed this input before.
-    auto iter = splits.find(func->name);
-    if (iter != splits.end()) {
-      if (!iter->second.splittable) {
-        // We've seen before that this cannot be split.
-        return false;
-      }
-      // We can split this function. If we've already done so, return that
-      // cached result.
-      if (iter->second.inlineable) {
-        if (inlineableOut) {
-          *inlineableOut = iter->second.inlineable;
-        }
-        return true;
-      }
-      // Otherwise, we are splittable but have not performed the split yet;
-      // proceed to do so.
-    }
-
-    // The default value of split.splittable is false, so if we fail we just
-    // need to return false from this function. If, on the other hand, we can
-    // split, then we will update this split info accordingly.
-    auto& split = splits[func->name];
+  // which calls
+  //
+  //   func foo(x) {
+  //     if (x) {
+  //       CODE
+  //     }
+  //   }
+  //
+  // If we partially inline then the call becomes
+  //
+  //   if (10) {
+  //     outlined-CODE()
+  //   }
+  //
+  // That is, we've only inlined the |if| out of foo(), and we call a function
+  // that contains the code in CODE. But if CODE is small enough to be inlined
+  // then a later iteration of the inliner will do just that. The result of this
+  // split inlining and then full inlining of the outlined code is exactly the
+  // same as if we normally inlined from the beginning, but it adds more work,
+  // so we'd like to avoid it, which we do by seeing when a split would be
+  // followed by inlining the remainder, and then we return Full here and just
+  // inline it all normally.
+  //
+  // Note that the above issue shows that we may in some cases inline more than
+  // the normal inlining limit. That is, if the inlining limit is 20, and CODE
+  // in the example above was 19, then foo()'s size was 21 (when we add the if
+  // and get of |x|). That leads to the situation where foo() is too big to
+  // normally inline, but the outlined CODE can then be inlined. And this shows
+  // that we end up inlining a function of size 21, even though it is larger
+  // than our inlining limit. We consider this acceptable because it only
+  // occurs on functions slightly larger than the inlining limit, and only if
+  // they have the simple forms that split inlining recognizes, that we think
+  // are useful to inline. Alternatively, if we wanted to avoid this, it would
+  // add complexity because we'd need to recognize the outlined function with
+  // CODE in it and *not* inline it even though it is small enough, after
+  // splitting, to be inlined. That is, splitting creates smaller functions, so
+  // it can lead to more inlining (but, again, that makes sense since we only
+  // split on very specific patterns we believe are worth handling in that
+  // manner).
+  InliningMode getSplitDrivenInliningMode(Function* func, FunctionInfo& info) {
+    const Index MaxIfs = options.inlining.partialInliningIfs;
+    assert(MaxIfs > 0);
 
     auto* body = func->body;
 
@@ -571,7 +826,7 @@ private:
     // outline any code - we can't outline a break without the break's target.
     if (auto* block = body->dynCast<Block>()) {
       if (BranchUtils::BranchSeeker::has(block, block->name)) {
-        return false;
+        return InliningMode::Uninlineable;
       }
     }
 
@@ -579,16 +834,14 @@ private:
     // of the function.
     auto* iff = getIf(body);
     if (!iff) {
-      return false;
+      return InliningMode::Uninlineable;
     }
 
     // If the condition is not very simple, the benefits of this optimization
     // are not obvious.
     if (!isSimple(iff->condition)) {
-      return false;
+      return InliningMode::Uninlineable;
     }
-
-    Builder builder(*module);
 
     // Pattern A: Check if the function begins with
     //
@@ -602,32 +855,16 @@ private:
       // return), and we would not even attempt to do splitting.
       assert(body->is<Block>());
 
-      split.splittable = true;
-      // If we were just checking, stop and report success.
-      if (!inlineableOut) {
-        return true;
+      auto outlinedFunctionSize = info.size - Measurer::measure(iff);
+      // If outlined function will be worth normal inline, skip the intermediate
+      // state and inline fully now. Note that if full inlining is disabled we
+      // will not do this, and instead inline partially.
+      if (!func->noFullInline &&
+          outlinedFunctionWorthInlining(info, outlinedFunctionSize)) {
+        return InliningMode::Full;
       }
 
-      // Note that "A" in the name here identifies this as being a split from
-      // pattern A. The second pattern B will have B in the name.
-      split.inlineable = copyFunction(func, "inlineable-A");
-      auto* outlined = copyFunction(func, "outlined-A");
-
-      // The inlineable function should only have the if, which will call the
-      // outlined function with a flipped condition.
-      auto* inlineableIf = getIf(split.inlineable->body);
-      inlineableIf->condition =
-        builder.makeUnary(EqZInt32, inlineableIf->condition);
-      inlineableIf->ifTrue = builder.makeCall(
-        outlined->name, getForwardedArgs(func, builder), Type::none);
-      split.inlineable->body = inlineableIf;
-
-      // The outlined function no longer needs the initial if.
-      auto& outlinedList = outlined->body->cast<Block>()->list;
-      outlinedList.erase(outlinedList.begin());
-
-      *inlineableOut = split.inlineable;
-      return true;
+      return InliningMode::SplitPatternA;
     }
 
     // Pattern B: Represents a function whose entire body looks like
@@ -666,13 +903,12 @@ private:
     // without an else.
 
     // Find the number of ifs.
-    const Index MaxIfs = options.inlining.partialInliningIfs;
     Index numIfs = 0;
     while (getIf(body, numIfs) && numIfs <= MaxIfs) {
       numIfs++;
     }
     if (numIfs == 0 || numIfs > MaxIfs) {
-      return false;
+      return InliningMode::Uninlineable;
     }
 
     // Look for a final item after the ifs.
@@ -680,46 +916,160 @@ private:
 
     // The final item must be simple (or not exist, which is simple enough).
     if (finalItem && !isSimple(finalItem)) {
-      return false;
+      return InliningMode::Uninlineable;
     }
 
     // There must be no other items after the optional final one.
     if (finalItem && getItem(body, numIfs + 1)) {
-      return false;
+      return InliningMode::Uninlineable;
     }
     // This has the general shape we seek. Check each if.
     for (Index i = 0; i < numIfs; i++) {
       auto* iff = getIf(body, i);
       // The if must have a simple condition and no else arm.
       if (!isSimple(iff->condition) || iff->ifFalse) {
-        return false;
+        return InliningMode::Uninlineable;
       }
       if (iff->ifTrue->type == Type::none) {
         // This must have no returns.
         if (!FindAll<Return>(iff->ifTrue).list.empty()) {
-          return false;
+          return InliningMode::Uninlineable;
         }
       } else {
-        // This is an if without an else, and so the type is either none of
-        // unreachable;
+        // This is an if without an else, and so the type is either none or
+        // unreachable, and we ruled out none before.
         assert(iff->ifTrue->type == Type::unreachable);
       }
     }
+    // Success, this matches the pattern.
 
-    // Success, this matches the pattern. Exit if we were just checking.
-    split.splittable = true;
-    if (!inlineableOut) {
-      return true;
+    // If the outlined function will be worth inlining normally, skip the
+    // intermediate state and inline fully now. (As above, if full inlining is
+    // disabled, we only partially inline.)
+    if (numIfs == 1) {
+      auto outlinedFunctionSize = Measurer::measure(iff->ifTrue);
+      if (!func->noFullInline &&
+          outlinedFunctionWorthInlining(info, outlinedFunctionSize)) {
+        return InliningMode::Full;
+      }
     }
 
-    split.inlineable = copyFunction(func, "inlineable-B");
+    return InliningMode::SplitPatternB;
+  }
+
+  // Returns the function we should inline, after we split the function into two
+  // pieces as described above (that is, in the example above, this would return
+  // foo$inlineable).
+  //
+  // This is called when we are definitely inlining the function, and so it will
+  // perform the splitting (if that has not already been done before).
+  Function* getInlineableSplitFunction(Function* func,
+                                       InliningMode inliningMode) {
+    assert(inliningMode == InliningMode::SplitPatternA ||
+           inliningMode == InliningMode::SplitPatternB);
+    auto& split = splits[func->name];
+
+    if (!split.inlineable) {
+      // We haven't performed the split, do it now.
+      split.inlineable = doSplit(func, inliningMode);
+    }
+
+    return split.inlineable;
+  }
+
+  // Clean up. When we are done we no longer need the inlineable functions on
+  // the module, as they have been inlined into all the places we wanted them
+  // for.
+  //
+  // Returns a list of the names of the functions we split.
+  std::vector<Name> finish() {
+    std::vector<Name> ret;
+    std::unordered_set<Name> inlineableNames;
+    for (auto& [func, split] : splits) {
+      auto* inlineable = split.inlineable;
+      if (inlineable) {
+        inlineableNames.insert(inlineable->name);
+        ret.push_back(func);
+      }
+    }
+    module->removeFunctions([&](Function* func) {
+      return inlineableNames.find(func->name) != inlineableNames.end();
+    });
+    return ret;
+  }
+
+private:
+  // Information about splitting a function.
+  struct Split {
+    // The inlineable function out of the two that we generate by splitting.
+    // That is, foo$inlineable from above.
+    Function* inlineable = nullptr;
+
+    // The outlined function, that is, foo$outlined from above.
+    Function* outlined = nullptr;
+  };
+
+  // All the splitting we have already performed.
+  //
+  // Note that this maps from function names, and not Function*, as the main
+  // inlining code can remove functions as it goes, but we can rely on names
+  // staying constant.
+  std::unordered_map<Name, Split> splits;
+
+  bool outlinedFunctionWorthInlining(FunctionInfo& origin, Index sizeEstimate) {
+    FunctionInfo info;
+    // Start with a copy of the origin's info, and apply the size estimate.
+    // This is not accurate, for example the origin function may have
+    // loop or calls even though this section may not have.
+    // This is a conservative estimate, that is, it will return true only when
+    // it should, but might return false when a more precise analysis would
+    // return true. And it is a practical estimation to avoid extra future work.
+    info = origin;
+    info.size = sizeEstimate;
+    return info.worthFullInlining(options);
+  }
+
+  Function* doSplit(Function* func, InliningMode inliningMode) {
+    Builder builder(*module);
+
+    if (inliningMode == InliningMode::SplitPatternA) {
+      // Note that "A" in the name here identifies this as being a split from
+      // pattern A. The second pattern B will have B in the name.
+      Function* inlineable = copyFunction(func, "inlineable-A");
+      auto* outlined = copyFunction(func, "outlined-A");
+
+      // The inlineable function should only have the if, which will call the
+      // outlined function with a flipped condition.
+      auto* inlineableIf = getIf(inlineable->body);
+      inlineableIf->condition =
+        builder.makeUnary(EqZInt32, inlineableIf->condition);
+      inlineableIf->ifTrue = builder.makeCall(
+        outlined->name, getForwardedArgs(func, builder), Type::none);
+      inlineable->body = inlineableIf;
+
+      // The outlined function no longer needs the initial if.
+      auto& outlinedList = outlined->body->cast<Block>()->list;
+      outlinedList.erase(outlinedList.begin());
+
+      return inlineable;
+    }
+
+    assert(inliningMode == InliningMode::SplitPatternB);
+
+    Function* inlineable = copyFunction(func, "inlineable-B");
+
+    const Index MaxIfs = options.inlining.partialInliningIfs;
+    assert(MaxIfs > 0);
 
     // The inlineable function should only have the ifs, which will call the
     // outlined heavy work.
-    for (Index i = 0; i < numIfs; i++) {
+    for (Index i = 0; i < MaxIfs; i++) {
       // For each if, create an outlined function with the body of that if,
       // and call that from the if.
-      auto* inlineableIf = getIf(split.inlineable->body, i);
+      auto* inlineableIf = getIf(inlineable->body, i);
+      if (!inlineableIf) {
+        break;
+      }
       auto* outlined = copyFunction(func, "outlined-B");
       outlined->body = inlineableIf->ifTrue;
 
@@ -736,10 +1086,7 @@ private:
       }
     }
 
-    // We can just leave the final value at the end, if it exists.
-
-    *inlineableOut = split.inlineable;
-    return true;
+    return inlineable;
   }
 
   Function* copyFunction(Function* func, std::string prefix) {
@@ -750,7 +1097,8 @@ private:
     return ModuleUtils::copyFunction(
       func,
       *module,
-      Names::getValidFunctionName(*module, prefix + '$' + func->name.str));
+      Names::getValidFunctionName(*module,
+                                  prefix + '$' + func->name.toString()));
   }
 
   // Get the i-th item in a sequence of initial items in an expression. That is,
@@ -801,7 +1149,7 @@ private:
     if (auto* unary = curr->dynCast<Unary>()) {
       return isSimple(unary->value);
     }
-    if (auto* is = curr->dynCast<RefIs>()) {
+    if (auto* is = curr->dynCast<RefIsNull>()) {
       return isSimple(is->value);
     }
     return false;
@@ -832,11 +1180,9 @@ struct Inlining : public Pass {
 
   std::unique_ptr<FunctionSplitter> functionSplitter;
 
-  PassRunner* runner = nullptr;
   Module* module = nullptr;
 
-  void run(PassRunner* runner_, Module* module_) override {
-    runner = runner_;
+  void run(Module* module_) override {
     module = module_;
 
     // No point to do more iterations than the number of functions, as it means
@@ -919,9 +1265,8 @@ struct Inlining : public Pass {
       infos[func->name];
     }
     {
-      PassRunner runner(module);
-      FunctionInfoScanner scanner(&infos);
-      scanner.run(&runner, module);
+      FunctionInfoScanner scanner(infos);
+      scanner.run(getPassRunner(), module);
       scanner.walkModuleCode(module);
     }
     for (auto& ex : module->exports) {
@@ -934,10 +1279,11 @@ struct Inlining : public Pass {
     }
 
     // When optimizing heavily for size, we may potentially split functions in
-    // order to inline parts of them.
-    if (runner->options.optimizeLevel >= 3 && !runner->options.shrinkLevel) {
-      functionSplitter =
-        std::make_unique<FunctionSplitter>(module, runner->options);
+    // order to inline parts of them, if partialInliningIfs is enabled.
+    auto& options = getPassOptions();
+    if (options.optimizeLevel >= 3 && !options.shrinkLevel &&
+        options.inlining.partialInliningIfs) {
+      functionSplitter = std::make_unique<FunctionSplitter>(module, options);
     }
   }
 
@@ -945,11 +1291,13 @@ struct Inlining : public Pass {
     // decide which to inline
     InliningState state;
     ModuleUtils::iterDefinedFunctions(*module, [&](Function* func) {
-      if (worthInlining(func->name)) {
-        state.worthInlining.insert(func->name);
+      InliningMode inliningMode = getInliningMode(func->name);
+      assert(inliningMode != InliningMode::Unknown);
+      if (inliningMode != InliningMode::Uninlineable) {
+        state.inlinableFunctions[func->name] = inliningMode;
       }
     });
-    if (state.worthInlining.size() == 0) {
+    if (state.inlinableFunctions.empty()) {
       return;
     }
     // Fill in actionsForFunction, as we operate on it in parallel (each
@@ -961,11 +1309,20 @@ struct Inlining : public Pass {
       state.actionsForFunction[func->name];
       funcNames.push_back(func->name);
     }
-    // find and plan inlinings
-    Planner(&state).run(runner, module);
-    // perform inlinings TODO: parallelize
-    std::unordered_map<Name, Index> inlinedUses; // how many uses we inlined
-    // which functions were inlined into
+
+    // Find and plan inlinings in parallel. This discovers inlining
+    // opportunities, by themselves, but does not yet take into account
+    // interactions between them (e.g. we don't want to both inline into a
+    // function and then inline it as well).
+    Planner(&state).run(getPassRunner(), module);
+
+    // Choose which inlinings to perform. We do this sequentially so that we
+    // can consider interactions between them, and avoid nondeterminism.
+    ChosenActions chosenActions;
+
+    // How many uses (calls of the function) we inlined.
+    std::unordered_map<Name, Index> inlinedUses;
+
     for (auto name : funcNames) {
       auto* func = module->getFunction(name);
       // if we've inlined a function, don't inline into it in this iteration,
@@ -994,29 +1351,40 @@ struct Inlining : public Pass {
         std::cout << "inline " << inlinedName << " into " << func->name << '\n';
 #endif
 
-        // Update the action for the actual inlining we are about to perform
+        // Update the action for the actual inlining we have chosen to perform
         // (when splitting, we will actually inline one of the split pieces and
         // not the original function itself; note how even if we do that then
         // we are still removing a call to the original function here, and so
         // we do not need to change anything else lower down - we still want to
         // note that we got rid of one use of the original function).
         action.contents = getActuallyInlinedFunction(action.contents);
-
-        // Perform the inlining and update counts.
-        doInlining(module, func, action);
+        action.nameHint = inlinedNameHint++;
+        chosenActions[func->name].push_back(action);
         inlinedUses[inlinedName]++;
         inlinedInto.insert(func);
         assert(inlinedUses[inlinedName] <= infos[inlinedName].refs);
       }
     }
-    for (auto func : inlinedInto) {
-      // Anything we inlined into may now have non-unique label names, fix it
-      // up.
-      wasm::UniqueNameMapper::uniquify(func->body);
+
+    if (chosenActions.empty()) {
+      // We found nothing to do.
+      return;
     }
-    if (optimize && inlinedInto.size() > 0) {
-      OptUtils::optimizeAfterInlining(inlinedInto, module, runner);
+
+    // Perform the inlinings in parallel (sequentially inside each function we
+    // inline into, but in parallel between them). If we are optimizing, do so
+    // as well.
+    {
+      PassUtils::FilteredPassRunner runner(
+        module, inlinedInto, getPassRunner()->options);
+      runner.setIsNested(true);
+      runner.add(std::make_unique<DoInlining>(chosenActions));
+      if (optimize) {
+        OptUtils::addUsefulPassesAfterInlining(runner);
+      }
+      runner.run();
     }
+
     // remove functions that we no longer need after inlining
     module->removeFunctions([&](Function* func) {
       auto name = func->name;
@@ -1026,20 +1394,34 @@ struct Inlining : public Pass {
     });
   }
 
-  bool worthInlining(Name name) {
+  // See explanation in InliningAction.
+  Index inlinedNameHint = 0;
+
+  // Decide for a given function whether to inline, and if so in what mode.
+  InliningMode getInliningMode(Name name) {
+    auto* func = module->getFunction(name);
+    auto& info = infos[name];
+
+    if (info.inliningMode != InliningMode::Unknown) {
+      return info.inliningMode;
+    }
+
     // Check if the function itself is worth inlining as it is.
-    if (infos[name].worthInlining(runner->options)) {
-      return true;
+    if (!func->noFullInline && info.worthFullInlining(getPassOptions())) {
+      return info.inliningMode = InliningMode::Full;
     }
 
     // Otherwise, check if we can at least inline part of it, if we are
     // interested in such things.
-    if (functionSplitter &&
-        functionSplitter->canSplit(module->getFunction(name))) {
-      return true;
+    if (!func->noPartialInline && functionSplitter) {
+      info.inliningMode = functionSplitter->getSplitDrivenInliningMode(
+        module->getFunction(name), info);
+      return info.inliningMode;
     }
 
-    return false;
+    // Cannot be fully or partially inlined => uninlineable.
+    info.inliningMode = InliningMode::Uninlineable;
+    return info.inliningMode;
   }
 
   // Gets the actual function to be inlined. Normally this is the function
@@ -1050,15 +1432,16 @@ struct Inlining : public Pass {
   // This is called right before actually performing the inlining, that is, we
   // are guaranteed to inline after this.
   Function* getActuallyInlinedFunction(Function* func) {
+    InliningMode inliningMode = infos[func->name].inliningMode;
     // If we want to inline this function itself, do so.
-    if (infos[func->name].worthInlining(runner->options)) {
+    if (inliningMode == InliningMode::Full) {
       return func;
     }
 
     // Otherwise, this is a case where we want to inline part of it, after
     // splitting.
     assert(functionSplitter);
-    return functionSplitter->getInlineableSplitFunction(func);
+    return functionSplitter->getInlineableSplitFunction(func, inliningMode);
   }
 
   // Checks if the combined size of the code after inlining is under the
@@ -1095,7 +1478,7 @@ static const char* MAIN = "main";
 static const char* ORIGINAL_MAIN = "__original_main";
 
 struct InlineMainPass : public Pass {
-  void run(PassRunner* runner, Module* module) override {
+  void run(Module* module) override {
     auto* main = module->getFunctionOrNull(MAIN);
     auto* originalMain = module->getFunctionOrNull(ORIGINAL_MAIN);
     if (!main || main->imported() || !originalMain ||
@@ -1117,7 +1500,10 @@ struct InlineMainPass : public Pass {
       // No call at all.
       return;
     }
-    doInlining(module, main, InliningAction(callSite, originalMain));
+    doInlining(module,
+               main,
+               InliningAction(callSite, originalMain, true),
+               getPassOptions());
   }
 };
 

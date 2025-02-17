@@ -19,7 +19,7 @@
  (global $__stack_pointer (mut i32) (i32.const 66112))
  (memory $0 2)
  (table $0 2 2 funcref)
- (elem (i32.const 1) $emscripten_longjmp)
+ (elem $0 (i32.const 1) $emscripten_longjmp)
  (export "memory" (memory $0))
  (export "__wasm_call_ctors" (func $__wasm_call_ctors))
  (export "main" (func $main))
@@ -141,33 +141,3 @@
   )
  )
 )
-(;
---BEGIN METADATA --
-{
-  "declares": [
-    "malloc",
-    "saveSetjmp",
-    "getTempRet0",
-    "emscripten_longjmp",
-    "testSetjmp",
-    "setTempRet0",
-    "free"
-  ],
-  "globalImports": [
-  ],
-  "exports": [
-    "__wasm_call_ctors",
-    "main",
-    "dynCall_vii"
-  ],
-  "namedGlobals": {
-  },
-  "invokeFuncs": [
-    "invoke_vii"
-  ],
-  "mainReadsParams": 0,
-  "features": [
-  ]
-}
--- END METADATA --
-;)

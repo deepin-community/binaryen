@@ -2,19 +2,15 @@
 ;; RUN: wasm-opt %s --optimize-instructions --enable-threads -S -o - | filecheck %s
 
 (module
- ;; CHECK:      (import "env" "memory" (memory $0 (shared 256 256)))
- (import "env" "memory" (memory $0 (shared 256 256)))
+ ;; CHECK:      (import "env" "memory" (memory $0 256 256 shared))
+ (import "env" "memory" (memory $0 256 256 shared))
 
  ;; CHECK:      (func $x
  ;; CHECK-NEXT:  (drop
- ;; CHECK-NEXT:   (i32.shr_s
- ;; CHECK-NEXT:    (i32.shl
- ;; CHECK-NEXT:     (i32.atomic.load8_u
- ;; CHECK-NEXT:      (i32.const 100)
- ;; CHECK-NEXT:     )
- ;; CHECK-NEXT:     (i32.const 24)
+ ;; CHECK-NEXT:   (i32.extend8_s
+ ;; CHECK-NEXT:    (i32.atomic.load8_u
+ ;; CHECK-NEXT:     (i32.const 100)
  ;; CHECK-NEXT:    )
- ;; CHECK-NEXT:    (i32.const 24)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
  ;; CHECK-NEXT: )

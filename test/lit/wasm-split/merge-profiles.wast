@@ -22,7 +22,8 @@
 ;; SPLIT-NEXT: Splitting out functions: qux{{$}}
 
 (module
-  (export "memory" (memory 0 0))
+  (memory $m 0 0)
+  (export "memory" (memory $m))
   (export "foo" (func $foo))
   (export "bar" (func $bar))
   (export "baz" (func $baz))

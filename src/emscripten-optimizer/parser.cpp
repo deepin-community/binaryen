@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <unordered_map>
+
 #include "parser.h"
 
 namespace cashew {
@@ -109,10 +111,6 @@ IString LOAD("load");
 IString STORE("store");
 IString GETTER("get");
 IString SETTER("set");
-
-IStringSet
-  keywords("var const function if else do while for break continue return "
-           "switch case default throw try catch finally true false null new");
 
 const char *OPERATOR_INITS = "+-*/%<>&^|~=!,?:.", *SEPARATORS = "([;{}";
 

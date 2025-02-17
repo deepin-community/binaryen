@@ -26,11 +26,59 @@
 namespace wasm {
 
 struct OptimizationOptions : public ToolOptions {
+  // By default we allow StackIR and enable it by default in higher optimization
+  // levels, but users can disallow it as well.
+  bool allowStackIR = true;
+
+  void parse(int argc, const char* argv[]) {
+    ToolOptions::parse(argc, argv);
+
+    // After parsing the arguments, update defaults based on the optimize/shrink
+    // levels.
+    if (allowStackIR &&
+        (passOptions.optimizeLevel >= 2 || passOptions.shrinkLevel >= 1)) {
+      passOptions.generateStackIR = true;
+      passOptions.optimizeStackIR = true;
+    }
+  }
+
   static constexpr const char* DEFAULT_OPT_PASSES = "O";
   static constexpr const int OS_OPTIMIZE_LEVEL = 2;
   static constexpr const int OS_SHRINK_LEVEL = 1;
 
-  std::vector<std::string> passes;
+  // Information to run a pass, as requested by a commandline flag.
+  struct PassInfo {
+    // The name of the pass to run.
+    std::string name;
+
+    // The main argument of the pass, if applicable.
+    std::optional<std::string> argument;
+
+    // The optimize and shrink levels to run the pass with, if specified. If not
+    // specified then the defaults are used.
+    std::optional<int> optimizeLevel;
+    std::optional<int> shrinkLevel;
+
+    PassInfo(std::string name) : name(name) {}
+    PassInfo(const char* name) : name(name) {}
+    PassInfo(std::string name, int optimizeLevel, int shrinkLevel)
+      : name(name), optimizeLevel(optimizeLevel), shrinkLevel(shrinkLevel) {}
+  };
+
+  std::vector<PassInfo> passes;
+
+  // Add a request to run all the default opt passes. They are run with the
+  // current opt and shrink levels specified, which are read from passOptions.
+  //
+  // Each caller to here sets the opt and shrink levels before, which provides
+  // the right values for us to read. That is, -Os etc. sets the default opt
+  // level, so that the last of -O3 -Os will override the previous default, but
+  // also we note the current opt level for when we run the pass, so that the
+  // sequence -O3 -Os will run -O3 and then -Os, and not -Os twice.
+  void addDefaultOptPasses() {
+    passes.push_back(PassInfo{
+      DEFAULT_OPT_PASSES, passOptions.optimizeLevel, passOptions.shrinkLevel});
+  }
 
   constexpr static const char* OptimizationOptionsCategory =
     "Optimization options";
@@ -51,7 +99,7 @@ struct OptimizationOptions : public ToolOptions {
             PassOptions::DEFAULT_OPTIMIZE_LEVEL == OS_OPTIMIZE_LEVEL &&
               PassOptions::DEFAULT_SHRINK_LEVEL == OS_SHRINK_LEVEL,
             "Help text states that -O is equivalent to -Os but now it isn't.");
-          passes.push_back(DEFAULT_OPT_PASSES);
+          addDefaultOptPasses();
         })
       .add("",
            "-O0",
@@ -71,7 +119,7 @@ struct OptimizationOptions : public ToolOptions {
            [this](Options*, const std::string&) {
              passOptions.optimizeLevel = 1;
              passOptions.shrinkLevel = 0;
-             passes.push_back(DEFAULT_OPT_PASSES);
+             addDefaultOptPasses();
            })
       .add(
         "",
@@ -82,7 +130,7 @@ struct OptimizationOptions : public ToolOptions {
         [this](Options*, const std::string&) {
           passOptions.optimizeLevel = 2;
           passOptions.shrinkLevel = 0;
-          passes.push_back(DEFAULT_OPT_PASSES);
+          addDefaultOptPasses();
         })
       .add("",
            "-O3",
@@ -93,7 +141,7 @@ struct OptimizationOptions : public ToolOptions {
            [this](Options*, const std::string&) {
              passOptions.optimizeLevel = 3;
              passOptions.shrinkLevel = 0;
-             passes.push_back(DEFAULT_OPT_PASSES);
+             addDefaultOptPasses();
            })
       .add("",
            "-O4",
@@ -105,7 +153,7 @@ struct OptimizationOptions : public ToolOptions {
            [this](Options*, const std::string&) {
              passOptions.optimizeLevel = 4;
              passOptions.shrinkLevel = 0;
-             passes.push_back(DEFAULT_OPT_PASSES);
+             addDefaultOptPasses();
            })
       .add("",
            "-Os",
@@ -115,7 +163,7 @@ struct OptimizationOptions : public ToolOptions {
            [this](Options*, const std::string&) {
              passOptions.optimizeLevel = OS_OPTIMIZE_LEVEL;
              passOptions.shrinkLevel = OS_SHRINK_LEVEL;
-             passes.push_back(DEFAULT_OPT_PASSES);
+             addDefaultOptPasses();
            })
       .add("",
            "-Oz",
@@ -125,7 +173,7 @@ struct OptimizationOptions : public ToolOptions {
            [this](Options*, const std::string&) {
              passOptions.optimizeLevel = 2;
              passOptions.shrinkLevel = 2;
-             passes.push_back(DEFAULT_OPT_PASSES);
+             addDefaultOptPasses();
            })
       .add("--optimize-level",
            "-ol",
@@ -150,6 +198,16 @@ struct OptimizationOptions : public ToolOptions {
            Options::Arguments::Zero,
            [&](Options* o, const std::string& arguments) {
              passOptions.debugInfo = true;
+           })
+      .add("--no-stack-ir",
+           "",
+           "do not use StackIR (even when it is the default)",
+           ToolOptionsCategory,
+           Options::Arguments::Zero,
+           [&](Options* o, const std::string& arguments) {
+             allowStackIR = false;
+             passOptions.generateStackIR = false;
+             passOptions.optimizeStackIR = false;
            })
       .add("--always-inline-max-function-size",
            "-aimfs",
@@ -248,6 +306,14 @@ struct OptimizationOptions : public ToolOptions {
            Options::Arguments::Zero,
            [this](Options*, const std::string&) {
              passOptions.zeroFilledMemory = true;
+           })
+      .add("--skip-pass",
+           "-sp",
+           "Skip a pass (do not run it)",
+           OptimizationOptionsCategory,
+           Options::Arguments::N,
+           [this](Options*, const std::string& pass) {
+             passOptions.passesToSkip.insert(pass);
            });
 
     // add passes in registry
@@ -267,21 +333,50 @@ struct OptimizationOptions : public ToolOptions {
         //   --foo --pass-arg=foo@ARG
         Options::Arguments::Optional,
         [this, p](Options*, const std::string& arg) {
+          PassInfo info(p);
           if (!arg.empty()) {
-            if (passOptions.arguments.count(p)) {
-              Fatal() << "Cannot pass multiple pass arguments to " << p;
-            }
-            passOptions.arguments[p] = arg;
+            info.argument = arg;
           }
-          passes.push_back(p);
+
+          passes.push_back(info);
         },
         PassRegistry::get()->isPassHidden(p));
     }
   }
 
+  // Pass arguments with the same name as the pass are stored per-instance on
+  // PassInfo, while all other arguments are stored globally on
+  // passOptions.arguments (which is what the overriden method on ToolOptions
+  // does).
+  void addPassArg(const std::string& key, const std::string& value) override {
+    // Scan the current pass list for the last defined instance of a pass named
+    // like the argument under consideration.
+    for (auto i = passes.rbegin(); i != passes.rend(); i++) {
+      if (i->name != key) {
+        continue;
+      }
+
+      if (i->argument.has_value()) {
+        Fatal() << i->name << " already set to " << *(i->argument);
+      }
+
+      // Found? Store the argument value there and return.
+      i->argument = value;
+      return;
+    }
+
+    // Not found? Store it globally if there is no pass with the same name.
+    if (!PassRegistry::get()->containsPass(key)) {
+      return ToolOptions::addPassArg(key, value);
+    }
+
+    // Not found, but we have a pass with the same name? Bail out.
+    Fatal() << "can't set " << key << ": pass not enabled";
+  }
+
   bool runningDefaultOptimizationPasses() {
     for (auto& pass : passes) {
-      if (pass == DEFAULT_OPT_PASSES) {
+      if (pass.name == DEFAULT_OPT_PASSES) {
         return true;
       }
     }
@@ -295,14 +390,50 @@ struct OptimizationOptions : public ToolOptions {
     if (debug) {
       passRunner.setDebug(true);
     }
+
+    // Flush anything in the current pass runner, and then reset it to a fresh
+    // state so it is ready for new things.
+    auto flush = [&]() {
+      passRunner.run();
+      passRunner.clear();
+    };
+
     for (auto& pass : passes) {
-      if (pass == DEFAULT_OPT_PASSES) {
+      if (pass.name == DEFAULT_OPT_PASSES) {
+        // This is something like -O3 or -Oz. We must run this now, in order to
+        // set the proper opt and shrink levels. To do that, first reset the
+        // runner so that anything already queued is run (since we can only run
+        // after those things).
+        flush();
+
+        // -O3/-Oz etc. always set their own optimize/shrinkLevels.
+        assert(pass.optimizeLevel);
+        assert(pass.shrinkLevel);
+
+        // Temporarily override the default levels.
+        assert(passRunner.options.optimizeLevel == passOptions.optimizeLevel);
+        assert(passRunner.options.shrinkLevel == passOptions.shrinkLevel);
+        passRunner.options.optimizeLevel = *pass.optimizeLevel;
+        passRunner.options.shrinkLevel = *pass.shrinkLevel;
+
+        // Run our optimizations now with the custom levels.
         passRunner.addDefaultOptimizationPasses();
+        flush();
+
+        // Restore the default optimize/shrinkLevels.
+        passRunner.options.optimizeLevel = passOptions.optimizeLevel;
+        passRunner.options.shrinkLevel = passOptions.shrinkLevel;
       } else {
-        passRunner.add(pass);
+        // This is a normal pass. Add it to the queue for execution.
+        passRunner.add(pass.name, pass.argument);
+
+        // Normal passes do not set their own optimize/shrinkLevels.
+        assert(!pass.optimizeLevel);
+        assert(!pass.shrinkLevel);
       }
     }
-    passRunner.run();
+
+    flush();
   }
 };
 

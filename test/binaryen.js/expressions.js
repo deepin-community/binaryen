@@ -109,7 +109,7 @@ console.log("# If");
   assert(
     theIf.toText()
     ==
-    "(if (result i32)\n (i32.const 4)\n (i32.const 5)\n (i32.const 6)\n)\n"
+        "(if (result i32)\n (i32.const 4)\n (then\n  (i32.const 5)\n )\n (else\n  (i32.const 6)\n )\n)\n"
   );
 
   theIf.ifFalse = null;
@@ -118,7 +118,7 @@ console.log("# If");
   assert(
     theIf.toText()
     ==
-    "(if (result i32)\n (i32.const 4)\n (i32.const 5)\n)\n"
+        "(if (result i32)\n (i32.const 4)\n (then\n  (i32.const 5)\n )\n)\n"
   );
 
   module.dispose();
@@ -348,7 +348,7 @@ console.log("# CallIndirect");
   assert(
     theCallIndirect.toText()
     ==
-    "(call_indirect $0 (type $i32_i32_=>_i32)\n (i32.const 7)\n (i32.const 6)\n (i32.const 9000)\n)\n"
+    "(call_indirect $0 (type $func.0)\n (i32.const 7)\n (i32.const 6)\n (i32.const 9000)\n)\n"
   );
 
   module.dispose();
@@ -476,23 +476,19 @@ console.log("# GlobalSet");
 console.log("# MemorySize");
 (function testMemorySize() {
   const module = new binaryen.Module();
-
+  module.setMemory(1, 1, null);
   var type = binaryen.i32;
   const theMemorySize = binaryen.MemorySize(module.memory.size());
   assert(theMemorySize instanceof binaryen.MemorySize);
   assert(theMemorySize instanceof binaryen.Expression);
   assert(theMemorySize.type === type);
-
-  theMemorySize.type = type = binaryen.f64;
-  assert(theMemorySize.type === type);
   theMemorySize.finalize();
-  assert(theMemorySize.type === binaryen.i32);
 
   console.log(theMemorySize.toText());
   assert(
     theMemorySize.toText()
     ==
-    "(memory.size)\n"
+    "(memory.size $0)\n"
   );
 
   module.dispose();
@@ -501,6 +497,7 @@ console.log("# MemorySize");
 console.log("# MemoryGrow");
 (function testMemoryGrow() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var type = binaryen.i32;
   var delta = module.i32.const(1);
@@ -512,16 +509,13 @@ console.log("# MemoryGrow");
 
   theMemoryGrow.delta = delta = module.i32.const(2);
   assert(theMemoryGrow.delta === delta);
-  theMemoryGrow.type = type = binaryen.f64;
-  assert(theMemoryGrow.type === type);
   theMemoryGrow.finalize();
-  assert(theMemoryGrow.type === binaryen.i32);
 
   console.log(theMemoryGrow.toText());
   assert(
     theMemoryGrow.toText()
     ==
-    "(memory.grow\n (i32.const 2)\n)\n"
+    "(memory.grow $0\n (i32.const 2)\n)\n"
   );
 
   module.dispose();
@@ -530,6 +524,7 @@ console.log("# MemoryGrow");
 console.log("# Load");
 (function testLoad() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var offset = 16;
   var align = 2;
@@ -566,7 +561,7 @@ console.log("# Load");
   assert(
     theLoad.toText()
     ==
-    "(i64.atomic.load offset=32 align=4\n (i32.const 128)\n)\n"
+    "(i64.atomic.load $0 offset=32 align=4\n (i32.const 128)\n)\n"
   );
 
   module.dispose();
@@ -575,6 +570,7 @@ console.log("# Load");
 console.log("# Store");
 (function testStore() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var offset = 16;
   var align = 2;
@@ -615,7 +611,7 @@ console.log("# Store");
   assert(
     theStore.toText()
     ==
-    "(i64.atomic.store offset=32 align=4\n (i32.const 128)\n (i32.const 2)\n)\n"
+    "(i64.atomic.store $0 offset=32 align=4\n (i32.const 128)\n (i32.const 2)\n)\n"
   );
 
   module.dispose();
@@ -822,6 +818,7 @@ console.log("# Return");
 console.log("# AtomicRMW");
 (function testAtomicRMW() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var op = binaryen.Operations.AtomicRMWAdd;
   var offset = 8;
@@ -855,7 +852,7 @@ console.log("# AtomicRMW");
   assert(
     theAtomicRMW.toText()
     ==
-    "(i64.atomic.rmw16.sub_u offset=16\n (i32.const 4)\n (i64.const 5)\n)\n"
+    "(i64.atomic.rmw16.sub_u $0 offset=16\n (i32.const 4)\n (i64.const 5)\n)\n"
   );
 
   module.dispose();
@@ -864,6 +861,7 @@ console.log("# AtomicRMW");
 console.log("# AtomicCmpxchg");
 (function testAtomicCmpxchg() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var offset = 8;
   var ptr = module.i32.const(2);
@@ -897,7 +895,7 @@ console.log("# AtomicCmpxchg");
   assert(
     theAtomicCmpxchg.toText()
     ==
-    "(i64.atomic.rmw16.cmpxchg_u offset=16\n (i32.const 5)\n (i64.const 6)\n (i64.const 7)\n)\n"
+    "(i64.atomic.rmw16.cmpxchg_u $0 offset=16\n (i32.const 5)\n (i64.const 6)\n (i64.const 7)\n)\n"
   );
 
   module.dispose();
@@ -906,6 +904,7 @@ console.log("# AtomicCmpxchg");
 console.log("# AtomicWait");
 (function testAtomicWait() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var ptr = module.i32.const(2);
   var expected = module.i32.const(3);
@@ -935,7 +934,7 @@ console.log("# AtomicWait");
   assert(
     theAtomicWait.toText()
     ==
-    "(memory.atomic.wait64\n (i32.const 5)\n (i32.const 6)\n (i64.const 7)\n)\n"
+    "(memory.atomic.wait64 $0\n (i32.const 5)\n (i32.const 6)\n (i64.const 7)\n)\n"
   );
 
   module.dispose();
@@ -944,6 +943,7 @@ console.log("# AtomicWait");
 console.log("# AtomicNotify");
 (function testAtomicNotify() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var ptr = module.i32.const(1);
   var notifyCount = module.i32.const(2);
@@ -966,7 +966,7 @@ console.log("# AtomicNotify");
   assert(
     theAtomicNotify.toText()
     ==
-    "(memory.atomic.notify\n (i32.const 3)\n (i32.const 4)\n)\n"
+    "(memory.atomic.notify $0\n (i32.const 3)\n (i32.const 4)\n)\n"
   );
 
   module.dispose();
@@ -1172,6 +1172,7 @@ console.log("# SIMDShift");
 console.log("# SIMDLoad");
 (function testSIMDLoad() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var op = binaryen.Operations.Load8x8SVec128;
   var offset = 16;
@@ -1201,7 +1202,7 @@ console.log("# SIMDLoad");
   assert(
     theSIMDLoad.toText()
     ==
-    "(v128.load8_splat offset=32 align=4\n (i32.const 2)\n)\n"
+    "(v128.load8_splat $0 offset=32 align=4\n (i32.const 2)\n)\n"
   );
 
   module.dispose();
@@ -1210,6 +1211,7 @@ console.log("# SIMDLoad");
 console.log("# SIMDLoadStoreLane");
 (function testSIMDLoadStoreLane() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var op = binaryen.Operations.Load8LaneVec128;
   var offset = 16;
@@ -1249,7 +1251,7 @@ console.log("# SIMDLoadStoreLane");
   assert(
     theSIMDLoadStoreLane.toText()
     ==
-    "(v128.load16_lane offset=32 2\n (i32.const 2)\n (v128.const i32x4 0x01010101 0x01010101 0x01010101 0x01010101)\n)\n"
+    "(v128.load16_lane $0 offset=32 2\n (i32.const 2)\n (v128.const i32x4 0x01010101 0x01010101 0x01010101 0x01010101)\n)\n"
   );
 
   theSIMDLoadStoreLane.op = op = binaryen.Operations.Store16LaneVec128;
@@ -1263,7 +1265,7 @@ console.log("# SIMDLoadStoreLane");
   assert(
     theSIMDLoadStoreLane.toText()
     ==
-    "(v128.store16_lane offset=32 2\n (i32.const 2)\n (v128.const i32x4 0x01010101 0x01010101 0x01010101 0x01010101)\n)\n"
+    "(v128.store16_lane $0 offset=32 2\n (i32.const 2)\n (v128.const i32x4 0x01010101 0x01010101 0x01010101 0x01010101)\n)\n"
   );
 
   module.dispose();
@@ -1272,8 +1274,9 @@ console.log("# SIMDLoadStoreLane");
 console.log("# MemoryInit");
 (function testMemoryInit() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
-  var segment = 1;
+  var segment = "1";
   var dest = module.i32.const(2);
   var offset = module.i32.const(3);
   var size = module.i32.const(4);
@@ -1286,8 +1289,8 @@ console.log("# MemoryInit");
   assert(theMemoryInit.size === size);
   assert(theMemoryInit.type === binaryen.none);
 
-  theMemoryInit.segment = segment = 5;
-  assert(theMemoryInit.segment === 5);
+  theMemoryInit.segment = segment = "5";
+  assert(theMemoryInit.segment === "5");
   theMemoryInit.dest = dest = module.i32.const(6);
   assert(theMemoryInit.dest === dest);
   theMemoryInit.offset = offset = module.i32.const(7);
@@ -1302,7 +1305,7 @@ console.log("# MemoryInit");
   assert(
     theMemoryInit.toText()
     ==
-    "(memory.init 5\n (i32.const 6)\n (i32.const 7)\n (i32.const 8)\n)\n"
+    "(memory.init $0 $5\n (i32.const 6)\n (i32.const 7)\n (i32.const 8)\n)\n"
   );
 
   module.dispose();
@@ -1312,15 +1315,15 @@ console.log("# DataDrop");
 (function testDataDrop() {
   const module = new binaryen.Module();
 
-  var segment = 1;
+  var segment = "1";
   const theDataDrop = binaryen.DataDrop(module.data.drop(segment));
   assert(theDataDrop instanceof binaryen.DataDrop);
   assert(theDataDrop instanceof binaryen.Expression);
   assert(theDataDrop.segment === segment);
   assert(theDataDrop.type === binaryen.none);
 
-  theDataDrop.segment = segment = 2;
-  assert(theDataDrop.segment === 2);
+  theDataDrop.segment = segment = "2";
+  assert(theDataDrop.segment === "2");
   theDataDrop.type = binaryen.f64;
   theDataDrop.finalize();
   assert(theDataDrop.type === binaryen.none);
@@ -1329,7 +1332,7 @@ console.log("# DataDrop");
   assert(
     theDataDrop.toText()
     ==
-    "(data.drop 2)\n"
+    "(data.drop $2)\n"
   );
 
   module.dispose();
@@ -1338,6 +1341,7 @@ console.log("# DataDrop");
 console.log("# MemoryCopy");
 (function testMemoryCopy() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var dest = module.i32.const(1);
   var source = module.i32.const(2);
@@ -1364,7 +1368,7 @@ console.log("# MemoryCopy");
   assert(
     theMemoryCopy.toText()
     ==
-    "(memory.copy\n (i32.const 4)\n (i32.const 5)\n (i32.const 6)\n)\n"
+    "(memory.copy $0 $0\n (i32.const 4)\n (i32.const 5)\n (i32.const 6)\n)\n"
   );
 
   module.dispose();
@@ -1373,6 +1377,7 @@ console.log("# MemoryCopy");
 console.log("# MemoryFill");
 (function testMemoryFill() {
   const module = new binaryen.Module();
+  module.setMemory(1, 1, null);
 
   var dest = module.i32.const(1);
   var value = module.i32.const(2);
@@ -1399,55 +1404,34 @@ console.log("# MemoryFill");
   assert(
     theMemoryFill.toText()
     ==
-    "(memory.fill\n (i32.const 4)\n (i32.const 5)\n (i32.const 6)\n)\n"
+    "(memory.fill $0\n (i32.const 4)\n (i32.const 5)\n (i32.const 6)\n)\n"
   );
 
   module.dispose();
 })();
 
-console.log("# RefIs");
-(function testRefIs() {
+console.log("# RefIsNull");
+(function testRefIsNull() {
   const module = new binaryen.Module();
 
-  var op = binaryen.Operations.RefIsNull;
   var value = module.local.get(1, binaryen.externref);
-  const theRefIs = binaryen.RefIs(module.ref.is_null(value));
-  assert(theRefIs instanceof binaryen.RefIs);
-  assert(theRefIs instanceof binaryen.Expression);
-  assert(theRefIs.op === op);
-  assert(theRefIs.value === value);
-  assert(theRefIs.type === binaryen.i32);
+  const theRefIsNull = binaryen.RefIsNull(module.ref.is_null(value));
+  assert(theRefIsNull instanceof binaryen.RefIsNull);
+  assert(theRefIsNull instanceof binaryen.Expression);
+  assert(theRefIsNull.value === value);
+  assert(theRefIsNull.type === binaryen.i32);
 
-  theRefIs.op = op = binaryen.Operations.RefIsFunc;
-  assert(theRefIs.op === op);
-  theRefIs.op = op = binaryen.Operations.RefIsNull;
-  theRefIs.value = value = module.local.get(2, binaryen.externref);
-  assert(theRefIs.value === value);
-  theRefIs.type = binaryen.f64;
-  theRefIs.finalize();
-  assert(theRefIs.type === binaryen.i32);
+  theRefIsNull.value = value = module.local.get(2, binaryen.externref);
+  assert(theRefIsNull.value === value);
+  theRefIsNull.type = binaryen.f64;
+  theRefIsNull.finalize();
+  assert(theRefIsNull.type === binaryen.i32);
 
-  console.log(theRefIs.toText());
+  console.log(theRefIsNull.toText());
   assert(
-    theRefIs.toText()
+    theRefIsNull.toText()
     ==
     "(ref.is_null\n (local.get $2)\n)\n"
-  );
-
-  assert(
-    binaryen.RefIs(module.ref.is_func(value)).toText()
-    ==
-    "(ref.is_func\n (local.get $2)\n)\n"
-  );
-  assert(
-    binaryen.RefIs(module.ref.is_data(value)).toText()
-    ==
-    "(ref.is_data\n (local.get $2)\n)\n"
-  );
-  assert(
-    binaryen.RefIs(module.ref.is_i31(value)).toText()
-    ==
-    "(ref.is_i31\n (local.get $2)\n)\n"
   );
 
   module.dispose();
@@ -1459,6 +1443,7 @@ console.log("# RefAs");
 
   var op = binaryen.Operations.RefAsNonNull;
   var value = module.local.get(1, binaryen.anyref);
+  var externref = module.local.get(3, binaryen.externref);
   const theRefAs = binaryen.RefAs(module.ref.as_non_null(value));
   assert(theRefAs instanceof binaryen.RefAs);
   assert(theRefAs instanceof binaryen.Expression);
@@ -1466,9 +1451,9 @@ console.log("# RefAs");
   assert(theRefAs.value === value);
   assert(theRefAs.type !== binaryen.i32); // TODO: === (ref any)
 
-  theRefAs.op = op = binaryen.Operations.RefAsFunc;
+  theRefAs.op = op = binaryen.Operations.RefAsExternConvertAny;
   assert(theRefAs.op === op);
-  theRefAs.op = op = binaryen.Operations.RefAsNull;
+  theRefAs.op = op = binaryen.Operations.RefAsNonNull;
   theRefAs.value = value = module.local.get(2, binaryen.anyref);
   assert(theRefAs.value === value);
   theRefAs.type = binaryen.f64;
@@ -1482,21 +1467,7 @@ console.log("# RefAs");
     "(ref.as_non_null\n (local.get $2)\n)\n"
   );
 
-  assert(
-    binaryen.RefAs(module.ref.as_func(value)).toText()
-    ==
-    "(ref.as_func\n (local.get $2)\n)\n"
-  );
-  assert(
-    binaryen.RefAs(module.ref.as_data(value)).toText()
-    ==
-    "(ref.as_data\n (local.get $2)\n)\n"
-  );
-  assert(
-    binaryen.RefAs(module.ref.as_i31(value)).toText()
-    ==
-    "(ref.as_i31\n (local.get $2)\n)\n"
-  );
+  // TODO: extern.convert_any and any.convert_extern
 
   module.dispose();
 })();
@@ -1750,7 +1721,7 @@ console.log("# TupleMake");
   assert(
     theTupleMake.toText()
     ==
-    "(tuple.make\n (i32.const 6)\n (i32.const 7)\n)\n"
+    "(tuple.make 2\n (i32.const 6)\n (i32.const 7)\n)\n"
   );
 
   module.dispose();
@@ -1787,34 +1758,31 @@ console.log("# TupleExtract");
   assert(
     theTupleExtract.toText()
     ==
-    "(tuple.extract 0\n (tuple.make\n  (f64.const 3)\n  (f64.const 4)\n )\n)\n"
+    "(tuple.extract 2 0\n (tuple.make 2\n  (f64.const 3)\n  (f64.const 4)\n )\n)\n"
   );
 
   module.dispose();
 })();
 
-console.log("# I31New");
-(function testI31New() {
+console.log("# RefI31");
+(function testRefI31() {
   const module = new binaryen.Module();
 
   var value = module.local.get(1, binaryen.i32);
-  const theI31New = binaryen.I31New(module.i31.new(value));
-  assert(theI31New instanceof binaryen.I31New);
-  assert(theI31New instanceof binaryen.Expression);
-  assert(theI31New.value === value);
-  assert(theI31New.type === binaryen.i31ref);
+  const theRefI31 = binaryen.RefI31(module.ref.i31(value));
+  assert(theRefI31 instanceof binaryen.RefI31);
+  assert(theRefI31 instanceof binaryen.Expression);
+  assert(theRefI31.value === value);
+  // assert(theRefI31.type === binaryen.?); // TODO: (ref i31)
 
-  theI31New.value = value = module.local.get(2, binaryen.i32);
-  assert(theI31New.value === value);
-  theI31New.type = binaryen.f64;
-  theI31New.finalize();
-  assert(theI31New.type === binaryen.i31ref);
+  theRefI31.value = value = module.local.get(2, binaryen.i32);
+  assert(theRefI31.value === value);
 
-  console.log(theI31New.toText());
+  console.log(theRefI31.toText());
   assert(
-    theI31New.toText()
+    theRefI31.toText()
     ==
-    "(i31.new\n (local.get $2)\n)\n"
+    "(ref.i31\n (local.get $2)\n)\n"
   );
 
   module.dispose();

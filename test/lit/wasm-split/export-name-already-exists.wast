@@ -4,5 +4,6 @@
 ;; CHECK: error: Export foo already exists.
 
 (module
-  (export "foo" (memory 0 0))
+  (memory $m 0 0)
+  (export "foo" (memory $m))
 )

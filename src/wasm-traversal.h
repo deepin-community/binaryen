@@ -27,6 +27,7 @@
 #ifndef wasm_wasm_traversal_h
 #define wasm_wasm_traversal_h
 
+#include "ir/debuginfo.h"
 #include "support/small_vector.h"
 #include "support/threads.h"
 #include "wasm.h"
@@ -50,6 +51,7 @@ template<typename SubType, typename ReturnType = void> struct Visitor {
   ReturnType visitTable(Table* curr) { return ReturnType(); }
   ReturnType visitElementSegment(ElementSegment* curr) { return ReturnType(); }
   ReturnType visitMemory(Memory* curr) { return ReturnType(); }
+  ReturnType visitDataSegment(DataSegment* curr) { return ReturnType(); }
   ReturnType visitTag(Tag* curr) { return ReturnType(); }
   ReturnType visitModule(Module* curr) { return ReturnType(); }
 
@@ -73,7 +75,7 @@ template<typename SubType, typename ReturnType = void> struct Visitor {
 // A visitor which must be overridden for each visitor that is reached.
 
 template<typename SubType, typename ReturnType = void>
-struct OverriddenVisitor {
+struct OverriddenVisitor : public Visitor<SubType, ReturnType> {
 // Expression visitors, which must be overridden
 #define DELEGATE(CLASS_TO_VISIT)                                               \
   ReturnType visit##CLASS_TO_VISIT(CLASS_TO_VISIT* curr) {                     \
@@ -85,22 +87,6 @@ struct OverriddenVisitor {
   }
 
 #include "wasm-delegations.def"
-
-  ReturnType visit(Expression* curr) {
-    assert(curr);
-
-    switch (curr->_id) {
-#define DELEGATE(CLASS_TO_VISIT)                                               \
-  case Expression::Id::CLASS_TO_VISIT##Id:                                     \
-    return static_cast<SubType*>(this)->visit##CLASS_TO_VISIT(                 \
-      static_cast<CLASS_TO_VISIT*>(curr))
-
-#include "wasm-delegations.def"
-
-      default:
-        WASM_UNREACHABLE("unexpected expression type");
-    }
-  }
 };
 
 // Visit with a single unified visitor, called on every node, instead of
@@ -138,16 +124,8 @@ struct Walker : public VisitorType {
   Expression* replaceCurrent(Expression* expression) {
     // Copy debug info, if present.
     if (currFunction) {
-      auto& debugLocations = currFunction->debugLocations;
-      if (!debugLocations.empty()) {
-        auto* curr = getCurrent();
-        auto iter = debugLocations.find(curr);
-        if (iter != debugLocations.end()) {
-          auto location = iter->second;
-          debugLocations.erase(iter);
-          debugLocations[expression] = location;
-        }
-      }
+      debuginfo::copyOriginalToReplacement(
+        getCurrent(), expression, currFunction);
     }
     return *replacep = expression;
   }
@@ -204,12 +182,15 @@ struct Walker : public VisitorType {
     static_cast<SubType*>(this)->visitTable(table);
   }
 
-  void walkMemory(Memory* memory) {
-    for (auto& segment : memory->segments) {
-      if (!segment.isPassive) {
-        walk(segment.offset);
-      }
+  void walkDataSegment(DataSegment* segment) {
+    if (!segment->isPassive) {
+      walk(segment->offset);
     }
+    static_cast<SubType*>(this)->visitDataSegment(segment);
+  }
+
+  void walkMemory(Memory* memory) {
+    // TODO: This method and walkTable should walk children too, or be renamed.
     static_cast<SubType*>(this)->visitMemory(memory);
   }
 
@@ -248,17 +229,23 @@ struct Walker : public VisitorType {
         self->walkTag(curr.get());
       }
     }
-    for (auto& curr : module->tables) {
-      self->walkTable(curr.get());
-    }
     for (auto& curr : module->elementSegments) {
       self->walkElementSegment(curr.get());
     }
-    self->walkMemory(&module->memory);
+    for (auto& curr : module->tables) {
+      self->walkTable(curr.get());
+    }
+    for (auto& curr : module->dataSegments) {
+      self->walkDataSegment(curr.get());
+    }
+    for (auto& curr : module->memories) {
+      self->walkMemory(curr.get());
+    }
   }
 
   // Walks module-level code, that is, code that is not in functions.
   void walkModuleCode(Module* module) {
+    setModule(module);
     // Dispatch statically through the SubType.
     SubType* self = static_cast<SubType*>(this);
     for (auto& curr : module->globals) {
@@ -274,13 +261,19 @@ struct Walker : public VisitorType {
         self->walk(item);
       }
     }
+    for (auto& curr : module->dataSegments) {
+      if (curr->offset) {
+        self->walk(curr->offset);
+      }
+    }
+    setModule(nullptr);
   }
 
   // Walk implementation. We don't use recursion as ASTs may be highly
   // nested.
 
   // Tasks receive the this pointer and a pointer to the pointer to operate on
-  typedef void (*TaskFunc)(SubType*, Expression**);
+  using TaskFunc = void (*)(SubType*, Expression**);
 
   struct Task {
     TaskFunc func;
@@ -352,8 +345,7 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 
 #define DELEGATE_START(id)                                                     \
   self->pushTask(SubType::doVisit##id, currp);                                 \
-  auto* cast = curr->cast<id>();                                               \
-  WASM_UNUSED(cast);
+  [[maybe_unused]] auto* cast = curr->cast<id>();
 
 #define DELEGATE_GET_FIELD(id, field) cast->field
 
@@ -364,13 +356,10 @@ struct PostWalker : public Walker<SubType, VisitorType> {
   self->maybePushTask(SubType::scan, &cast->field);
 
 #define DELEGATE_FIELD_INT(id, field)
-#define DELEGATE_FIELD_INT_ARRAY(id, field)
 #define DELEGATE_FIELD_LITERAL(id, field)
 #define DELEGATE_FIELD_NAME(id, field)
-#define DELEGATE_FIELD_NAME_VECTOR(id, field)
 #define DELEGATE_FIELD_SCOPE_NAME_DEF(id, field)
 #define DELEGATE_FIELD_SCOPE_NAME_USE(id, field)
-#define DELEGATE_FIELD_SCOPE_NAME_USE_VECTOR(id, field)
 #define DELEGATE_FIELD_TYPE(id, field)
 #define DELEGATE_FIELD_HEAPTYPE(id, field)
 #define DELEGATE_FIELD_ADDRESS(id, field)
@@ -381,15 +370,14 @@ struct PostWalker : public Walker<SubType, VisitorType> {
 
 // Stacks of expressions tend to be limited in size (although, sometimes
 // super-nested blocks exist for br_table).
-typedef SmallVector<Expression*, 10> ExpressionStack;
+using ExpressionStack = SmallVector<Expression*, 10>;
 
 // Traversal with a control-flow stack.
 
 template<typename SubType, typename VisitorType = Visitor<SubType>>
 struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
-  ControlFlowWalker() = default;
-
-  ExpressionStack controlFlowStack; // contains blocks, loops, and ifs
+  // contains blocks, loops, ifs, trys, and try_tables
+  ExpressionStack controlFlowStack;
 
   // Uses the control flow stack to find the target of a break to a name
   Expression* findBreakTarget(Name name) {
@@ -406,8 +394,9 @@ struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
           return curr;
         }
       } else {
-        // an if or try, ignorable
-        assert(curr->template is<If>() || curr->template is<Try>());
+        // an if, try, or try_table, ignorable
+        assert(curr->template is<If>() || curr->template is<Try>() ||
+               curr->template is<TryTable>());
       }
       if (i == 0) {
         return nullptr;
@@ -433,7 +422,8 @@ struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
       case Expression::Id::BlockId:
       case Expression::Id::IfId:
       case Expression::Id::LoopId:
-      case Expression::Id::TryId: {
+      case Expression::Id::TryId:
+      case Expression::Id::TryTableId: {
         self->pushTask(SubType::doPostVisitControlFlow, currp);
         break;
       }
@@ -447,7 +437,8 @@ struct ControlFlowWalker : public PostWalker<SubType, VisitorType> {
       case Expression::Id::BlockId:
       case Expression::Id::IfId:
       case Expression::Id::LoopId:
-      case Expression::Id::TryId: {
+      case Expression::Id::TryId:
+      case Expression::Id::TryTableId: {
         self->pushTask(SubType::doPreVisitControlFlow, currp);
         break;
       }
@@ -516,6 +507,53 @@ struct ExpressionStackWalker : public PostWalker<SubType, VisitorType> {
     // also update the stack
     expressionStack.back() = expression;
     return expression;
+  }
+};
+
+// Traversal keeping track of try depth
+
+// This is used to keep track of whether we are in the scope of an
+// exception handler. This matters since return_call is not equivalent
+// to return + call within an exception handler. If another kind of
+// handler scope is added, this code will need to be updated.
+template<typename SubType, typename VisitorType = Visitor<SubType>>
+struct TryDepthWalker : public PostWalker<SubType, VisitorType> {
+  TryDepthWalker() = default;
+
+  size_t tryDepth = 0;
+
+  static void doEnterTry(SubType* self, Expression** currp) {
+    self->tryDepth++;
+  }
+
+  static void doLeaveTry(SubType* self, Expression** currp) {
+    self->tryDepth--;
+  }
+
+  static void scan(SubType* self, Expression** currp) {
+    auto* curr = *currp;
+
+    if (curr->is<Try>()) {
+      self->pushTask(SubType::doVisitTry, currp);
+      auto& catchBodies = curr->cast<Try>()->catchBodies;
+      for (int i = int(catchBodies.size()) - 1; i >= 0; i--) {
+        self->pushTask(SubType::scan, &catchBodies[i]);
+      }
+      self->pushTask(SubType::doLeaveTry, currp);
+      self->pushTask(SubType::scan, &curr->cast<Try>()->body);
+      self->pushTask(SubType::doEnterTry, currp);
+      return;
+    }
+
+    if (curr->is<TryTable>()) {
+      self->pushTask(SubType::doLeaveTry, currp);
+    }
+
+    PostWalker<SubType, VisitorType>::scan(self, currp);
+
+    if (curr->is<TryTable>()) {
+      self->pushTask(SubType::doEnterTry, currp);
+    }
   }
 };
 
