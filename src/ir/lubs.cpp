@@ -15,6 +15,7 @@
  */
 
 #include "ir/lubs.h"
+#include "ir/find_all.h"
 #include "ir/utils.h"
 #include "wasm-type.h"
 #include "wasm.h"
@@ -45,15 +46,15 @@ LUBFinder getResultsLUB(Function* func, Module& wasm) {
   //  )
   ReFinalize().walkFunctionInModule(func, &wasm);
 
-  lub.noteUpdatableExpression(func->body);
-  if (lub.getBestPossible() == originalType) {
+  lub.note(func->body->type);
+  if (lub.getLUB() == originalType) {
     return lub;
   }
 
   // Scan the body and look at the returns. First, return expressions.
   for (auto* ret : FindAll<Return>(func->body).list) {
-    lub.noteUpdatableExpression(ret->value);
-    if (lub.getBestPossible() == originalType) {
+    lub.note(ret->value->type);
+    if (lub.getLUB() == originalType) {
       return lub;
     }
   }
@@ -64,7 +65,7 @@ LUBFinder getResultsLUB(Function* func, Module& wasm) {
     // Return whether we still look ok to do the optimization. If this is
     // false then we can stop here.
     lub.note(type);
-    return lub.getBestPossible() != originalType;
+    return lub.getLUB() != originalType;
   };
 
   for (auto* call : FindAll<Call>(func->body).list) {
@@ -82,10 +83,15 @@ LUBFinder getResultsLUB(Function* func, Module& wasm) {
   for (auto* call : FindAll<CallRef>(func->body).list) {
     if (call->isReturn) {
       auto targetType = call->target->type;
+      // We can skip unreachable code and calls to bottom types, as both trap.
       if (targetType == Type::unreachable) {
         continue;
       }
-      if (!processReturnType(targetType.getHeapType().getSignature().results)) {
+      auto targetHeapType = targetType.getHeapType();
+      if (targetHeapType.isBottom()) {
+        continue;
+      }
+      if (!processReturnType(targetHeapType.getSignature().results)) {
         return lub;
       }
     }

@@ -1,28 +1,28 @@
 (module
  (type $3 (func))
  (type $i (func (param i32)))
- (type $none_=>_i32 (func (result i32)))
+ (type $2 (func (result i32)))
  (type $ii (func (param i32 i32)))
  (type $iii (func (param i32 i32 i32)))
- (type $none_=>_f64 (func (result f64)))
- (memory $0 (shared 256 256))
+ (type $5 (func (result f64)))
+ (memory $0 256 256 shared)
  (table $0 1 1 funcref)
- (elem (i32.const 0) $call-i)
- (func $call-i (param $0 i32)
+ (elem $0 (i32.const 0) $call-i)
+ (func $call-i (type $i) (param $0 i32)
   (nop)
  )
- (func $call-ii (param $0 i32) (param $1 i32)
+ (func $call-ii (type $ii) (param $0 i32) (param $1 i32)
   (nop)
  )
- (func $call-iii (param $0 i32) (param $1 i32) (param $2 i32)
+ (func $call-iii (type $iii) (param $0 i32) (param $1 i32) (param $2 i32)
   (nop)
  )
- (func $b0-yes (param $i1 i32)
+ (func $b0-yes (type $i) (param $i1 i32)
   (drop
    (i32.const 10)
   )
  )
- (func $b0-no (param $i1 i32)
+ (func $b0-no (type $i) (param $i1 i32)
   (block $topmost
    (block $block0
     (br $block0)
@@ -30,17 +30,17 @@
    (br $topmost)
   )
  )
- (func $b0-br-but-ok (param $i1 i32)
+ (func $b0-br-but-ok (type $i) (param $i1 i32)
   (block $topmost
    (br $topmost)
   )
  )
- (func $b1-yes (param $i1 i32)
+ (func $b1-yes (type $i) (param $i1 i32)
   (drop
    (i32.const 10)
   )
  )
- (func $b2-yes (param $i1 i32)
+ (func $b2-yes (type $i) (param $i1 i32)
   (drop
    (i32.const 5)
   )
@@ -51,7 +51,7 @@
    (i32.const 15)
   )
  )
- (func $b3-yes (param $i1 i32)
+ (func $b3-yes (type $i) (param $i1 i32)
   (drop
    (i32.const 3)
   )
@@ -68,7 +68,7 @@
    (i32.const 20)
   )
  )
- (func $b4 (param $i1 i32)
+ (func $b4 (type $i) (param $i1 i32)
   (block $inner
    (drop
     (i32.const 10)
@@ -76,7 +76,7 @@
    (br $inner)
   )
  )
- (func $b5 (param $i1 i32)
+ (func $b5 (type $i) (param $i1 i32)
   (block $middle
    (drop
     (i32.const 10)
@@ -87,7 +87,7 @@
    (br $middle)
   )
  )
- (func $b6 (param $i1 i32)
+ (func $b6 (type $i) (param $i1 i32)
   (drop
    (i32.const 5)
   )
@@ -101,7 +101,7 @@
    (i32.const 15)
   )
  )
- (func $b7 (param $i1 i32)
+ (func $b7 (type $i) (param $i1 i32)
   (drop
    (i32.const 3)
   )
@@ -124,7 +124,7 @@
    (i32.const 20)
   )
  )
- (func $unary
+ (func $unary (type $3)
   (local $x i32)
   (drop
    (i32.eqz
@@ -166,16 +166,13 @@
     (i32.const 20)
    )
   )
-  (return
-   (block
-    (drop
-     (i32.const 10)
-    )
-    (unreachable)
-   )
+  (drop
+   (i32.const 10)
   )
+  (unreachable)
+  (return)
  )
- (func $binary
+ (func $binary (type $3)
   (drop
    (i32.add
     (block (result i32)
@@ -289,30 +286,26 @@
    (i32.const 30)
   )
   (drop
-   (block
-    (drop
-     (i32.const 10)
-    )
-    (i32.add
-     (unreachable)
-     (i32.const 20)
-    )
-   )
+   (i32.const 10)
   )
-  (drop
+  (i32.add
+   (unreachable)
    (i32.const 20)
   )
-  (drop
-   (i32.add
-    (block (result i32)
-     (unreachable)
+  (block
+   (unreachable)
+   (drop
+    (i32.const 20)
+   )
+   (drop
+    (i32.add
      (i32.const 10)
+     (i32.const 30)
     )
-    (i32.const 30)
    )
   )
  )
- (func $trinary
+ (func $trinary (type $3)
   (drop
    (i32.const 10)
   )
@@ -416,20 +409,20 @@
     )
    )
   )
-  (drop
-   (i32.const 30)
-  )
-  (drop
-   (i32.const 50)
-  )
-  (drop
-   (select
-    (block (result i32)
-     (unreachable)
+  (block
+   (unreachable)
+   (drop
+    (i32.const 30)
+   )
+   (drop
+    (i32.const 50)
+   )
+   (drop
+    (select
      (i32.const 20)
+     (i32.const 40)
+     (i32.const 60)
     )
-    (i32.const 40)
-    (i32.const 60)
    )
   )
   (drop
@@ -440,7 +433,7 @@
   )
   (drop
    (select
-    (block (result i32)
+    (block
      (drop
       (i32.const 10)
      )
@@ -450,20 +443,20 @@
     (i32.const 60)
    )
   )
-  (drop
-   (i32.const 10)
-  )
-  (drop
-   (i32.const 50)
-  )
-  (drop
-   (select
-    (i32.const 20)
-    (block (result i32)
-     (unreachable)
+  (block
+   (drop
+    (i32.const 10)
+   )
+   (unreachable)
+   (drop
+    (i32.const 50)
+   )
+   (drop
+    (select
+     (i32.const 20)
      (i32.const 40)
+     (i32.const 60)
     )
-    (i32.const 60)
    )
   )
   (drop
@@ -475,7 +468,7 @@
   (drop
    (select
     (i32.const 20)
-    (block (result i32)
+    (block
      (drop
       (i32.const 30)
      )
@@ -484,18 +477,18 @@
     (i32.const 60)
    )
   )
-  (drop
-   (i32.const 10)
-  )
-  (drop
-   (i32.const 30)
-  )
-  (drop
-   (select
-    (i32.const 20)
-    (i32.const 40)
-    (block (result i32)
-     (unreachable)
+  (block
+   (drop
+    (i32.const 10)
+   )
+   (drop
+    (i32.const 30)
+   )
+   (unreachable)
+   (drop
+    (select
+     (i32.const 20)
+     (i32.const 40)
      (i32.const 60)
     )
    )
@@ -510,7 +503,7 @@
    (select
     (i32.const 20)
     (i32.const 40)
-    (block (result i32)
+    (block
      (drop
       (i32.const 50)
      )
@@ -519,7 +512,7 @@
    )
   )
  )
- (func $breaks
+ (func $breaks (type $3)
   (block $out
    (drop
     (i32.const 10)
@@ -569,7 +562,7 @@
    (unreachable)
   )
  )
- (func $calls
+ (func $calls (type $3)
   (call $call-i
    (block (result i32)
     (i32.const 10)
@@ -600,21 +593,21 @@
    (i32.const 20)
    (i32.const 40)
   )
-  (drop
-   (i32.const 20)
-  )
-  (call $call-ii
-   (block (result i32)
-    (unreachable)
-    (i32.const 10)
+  (block
+   (unreachable)
+   (drop
+    (i32.const 20)
    )
-   (i32.const 30)
+   (call $call-ii
+    (i32.const 10)
+    (i32.const 30)
+   )
   )
   (drop
    (i32.const 20)
   )
   (call $call-ii
-   (block (result i32)
+   (block
     (drop
      (i32.const 10)
     )
@@ -622,13 +615,13 @@
    )
    (i32.const 30)
   )
-  (drop
-   (i32.const 10)
-  )
-  (call $call-ii
-   (i32.const 20)
-   (block (result i32)
-    (unreachable)
+  (block
+   (drop
+    (i32.const 10)
+   )
+   (unreachable)
+   (call $call-ii
+    (i32.const 20)
     (i32.const 30)
    )
   )
@@ -637,7 +630,7 @@
   )
   (call $call-ii
    (i32.const 20)
-   (block (result i32)
+   (block
     (drop
      (i32.const 30)
     )
@@ -717,7 +710,7 @@
    (unreachable)
   )
  )
- (func $atomics
+ (func $atomics (type $3)
   (drop
    (i32.const 10)
   )
@@ -744,7 +737,7 @@
    )
   )
  )
- (func $mix-select (param $x i32)
+ (func $mix-select (type $i) (param $x i32)
   (drop
    (select
     (local.get $x)
@@ -758,7 +751,7 @@
    )
   )
  )
- (func $block-type-change
+ (func $block-type-change (type $3)
   (local $0 f64)
   (local $1 f64)
   (nop)
@@ -767,14 +760,16 @@
     (local.get $0)
     (local.get $1)
    )
-   (nop)
+   (then
+    (nop)
+   )
   )
  )
- (func $do-reorder (param $x i32)
+ (func $do-reorder (type $i) (param $x i32)
   (local $y i32)
   (if
    (i32.const 1)
-   (block
+   (then
     (local.set $y
      (i32.const 5)
     )
@@ -787,85 +782,75 @@
    )
   )
  )
- (func $do-not-reorder (param $x i32)
+ (func $do-not-reorder (type $i) (param $x i32)
   (local $y i32)
   (if
    (i32.const 1)
-   (local.set $x
-    (i32.le_u
-     (local.get $y)
-     (block (result i32)
-      (local.set $y
-       (i32.const 5)
+   (then
+    (local.set $x
+     (i32.le_u
+      (local.get $y)
+      (block (result i32)
+       (local.set $y
+        (i32.const 5)
+       )
+       (i32.const 10)
       )
-      (i32.const 10)
      )
     )
    )
   )
  )
- (func $return-different-type (result i32)
+ (func $return-different-type (type $2) (result i32)
   (drop
-   (f64.abs
-    (block
-     (drop
-      (i32.const 2)
-     )
-     (return
-      (i32.const 1)
-     )
-    )
+   (i32.const 2)
+  )
+  (f64.abs
+   (return
+    (i32.const 1)
    )
   )
   (unreachable)
  )
- (func $drop-unreachable (result i32)
+ (func $drop-unreachable (type $2) (result i32)
   (local $0 i32)
-  (drop
-   (block (result i32)
-    (unreachable)
-   )
-  )
+  (unreachable)
   (unreachable)
  )
- (func $concrete_finale_in_unreachable (result f64)
-  (drop
-   (block (result f64)
-    (unreachable)
+ (func $concrete_finale_in_unreachable (type $5) (result f64)
+  (block
+   (unreachable)
+   (drop
     (f64.const 6.322092475576799e-96)
    )
   )
   (f64.const -1)
  )
- (func $dont-move-unreachable
+ (func $dont-move-unreachable (type $3)
   (loop $label$0
+   (br $label$0)
    (drop
-    (block (result i32)
-     (br $label$0)
-     (i32.const 1)
-    )
+    (i32.const 1)
    )
   )
  )
- (func $dont-move-unreachable-last
+ (func $dont-move-unreachable-last (type $3)
   (loop $label$0
-   (drop
-    (block (result i32)
-     (call $dont-move-unreachable-last)
-     (br $label$0)
-    )
-   )
+   (call $dont-move-unreachable-last)
+   (br $label$0)
   )
  )
- (func $move-around-unreachable-in-middle
+ (func $move-around-unreachable-in-middle (type $3)
   (loop $label$0
    (nop)
    (drop
     (block $label$3 (result i32)
      (drop
-      (br_if $label$3
+      (block
        (br $label$0)
-       (i32.const 0)
+       (drop
+        (i32.const 0)
+       )
       )
      )
      (i32.const 1)
@@ -873,21 +858,15 @@
    )
   )
  )
- (func $drop-unreachable-block-with-concrete-final
+ (func $drop-unreachable-block-with-concrete-final (type $3)
   (drop
-   (block (result i32)
-    (drop
-     (block
-      (drop
-       (return)
-      )
-     )
-    )
-    (i32.const -452)
-   )
+   (return)
+  )
+  (drop
+   (i32.const -452)
   )
  )
- (func $merging-with-unreachable-in-middle (result i32)
+ (func $merging-with-unreachable-in-middle (type $2) (result i32)
   (block (result i32)
    (return
     (i32.const 21536)
@@ -898,19 +877,15 @@
    (i32.const 19299)
   )
  )
- (func $remove-br-after-unreachable
+ (func $remove-br-after-unreachable (type $3)
   (block $label$9
-   (drop
-    (block
-     (block
-      (return)
-      (br $label$9)
-     )
-    )
+   (block
+    (return)
+    (br $label$9)
    )
   )
  )
- (func $block-tails
+ (func $block-tails (type $3)
   (block $l1
    (drop
     (i32.const -2)
@@ -959,8 +934,10 @@
   (block $l5
    (if
     (i32.const 10)
-    (br_if $l5
-     (i32.const 11)
+    (then
+     (br_if $l5
+      (i32.const 11)
+     )
     )
    )
    (drop
@@ -1047,7 +1024,7 @@
    )
   )
  )
- (func $loop-tails
+ (func $loop-tails (type $3)
   (loop $l1
    (drop
     (i32.const -2)
@@ -1100,8 +1077,10 @@
   (loop $l5
    (if
     (i32.const 10)
-    (br_if $l5
-     (i32.const 11)
+    (then
+     (br_if $l5
+      (i32.const 11)
+     )
     )
    )
   )
@@ -1196,7 +1175,7 @@
    (i32.const 33)
   )
  )
- (func $block-tail-one
+ (func $block-tail-one (type $3)
   (block $l1
    (drop
     (i32.const -2)
@@ -1216,7 +1195,7 @@
    (i32.const 2)
   )
  )
- (func $loop-tail-one
+ (func $loop-tail-one (type $3)
   (loop $l1
    (drop
     (i32.const -2)
@@ -1236,7 +1215,7 @@
    (i32.const 2)
   )
  )
- (func $block-tail-value (result i32)
+ (func $block-tail-value (type $2) (result i32)
   (block $l1 (result i32)
    (drop
     (i32.const -1)
@@ -1250,7 +1229,7 @@
    (i32.const 2)
   )
  )
- (func $block-tail-empty
+ (func $block-tail-empty (type $3)
   (block $l1
    (drop
     (i32.const -1)
@@ -1258,7 +1237,7 @@
    (br $l1)
   )
  )
- (func $loop-tail-empty
+ (func $loop-tail-empty (type $3)
   (loop $l1
    (drop
     (i32.const -1)
@@ -1266,7 +1245,7 @@
    (br $l1)
   )
  )
- (func $block-tail-unreachable (result i32)
+ (func $block-tail-unreachable (type $2) (result i32)
   (block $l1 (result i32)
    (drop
     (i32.const -1)
@@ -1283,7 +1262,7 @@
    (unreachable)
   )
  )
- (func $loop-tail-unreachable (result i32)
+ (func $loop-tail-unreachable (type $2) (result i32)
   (loop $l1
    (drop
     (i32.const -1)
@@ -1299,9 +1278,9 @@
  )
 )
 (module
- (type $none_=>_i32 (func (result i32)))
- (type $f64_i32_=>_i32 (func (param f64 i32) (result i32)))
- (func $unreachable-in-sub-block (param $0 f64) (param $1 i32) (result i32)
+ (type $0 (func (result i32)))
+ (type $1 (func (param f64 i32) (result i32)))
+ (func $unreachable-in-sub-block (type $1) (param $0 f64) (param $1 i32) (result i32)
   (local $2 i32)
   (local $9 i32)
   (loop $label$1
@@ -1330,13 +1309,13 @@
   (nop)
   (local.get $9)
  )
- (func $trivial (result i32)
+ (func $trivial (type $0) (result i32)
   (block
    (unreachable)
    (nop)
   )
  )
- (func $trivial-more (result i32)
+ (func $trivial-more (type $0) (result i32)
   (block
    (nop)
    (unreachable)
@@ -1352,8 +1331,8 @@
  )
 )
 (module
- (type $none_=>_none (func))
- (func $merge-some-block
+ (type $0 (func))
+ (func $merge-some-block (type $0)
   (drop
    (i32.const 1)
   )
@@ -1430,7 +1409,7 @@
    )
   )
  )
- (func $merge-some-loop
+ (func $merge-some-loop (type $0)
   (drop
    (i32.const 1)
   )
@@ -1498,7 +1477,7 @@
    )
   )
  )
- (func $merge-some-loop-taken
+ (func $merge-some-loop-taken (type $0)
   (loop $l1
    (block $b1
     (drop
@@ -1674,13 +1653,13 @@
  )
 )
 (module
- (type $none_=>_none (func))
- (type $i32_=>_none (func (param i32)))
+ (type $0 (func))
+ (type $1 (func (param i32)))
  (tag $e (param i32))
- (func $foo
+ (func $foo (type $0)
   (nop)
  )
- (func $throw
+ (func $throw (type $0)
   (nop)
   (throw $e
    (i32.const 3)

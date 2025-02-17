@@ -1,5 +1,5 @@
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -10,10 +10,7 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
- function $0() {
+ function exp1() {
   block : {
    loop : while (1) switch (1 | 0) {
    case 1:
@@ -24,7 +21,7 @@ function asmFunc(env) {
   }
  }
  
- function $1() {
+ function exp2() {
   block : {
    loop : while (1) switch (1 | 0) {
    case 1:
@@ -36,12 +33,12 @@ function asmFunc(env) {
  }
  
  return {
-  "exp1": $0, 
-  "exp2": $1
+  "exp1": exp1, 
+  "exp2": exp2
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var exp1 = retasmFunc.exp1;
 export var exp2 = retasmFunc.exp2;

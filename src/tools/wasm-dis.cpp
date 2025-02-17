@@ -24,7 +24,6 @@
 
 #include "tool-options.h"
 
-using namespace cashew;
 using namespace wasm;
 
 int main(int argc, const char* argv[]) {
@@ -65,18 +64,25 @@ int main(int argc, const char* argv[]) {
     std::cerr << "parsing binary..." << std::endl;
   }
   Module wasm;
-  options.applyFeatures(wasm);
+  options.applyOptionsBeforeParse(wasm);
   try {
     ModuleReader().readBinary(options.extra["infile"], wasm, sourceMapFilename);
   } catch (ParseException& p) {
     p.dump(std::cerr);
     std::cerr << '\n';
-    Fatal() << "error in parsing wasm binary";
+    if (options.debug) {
+      Fatal() << "error parsing wasm. here is what we read up to the error:\n"
+              << wasm;
+    } else {
+      Fatal() << "error parsing wasm (try --debug for more info)";
+    }
   } catch (MapParseException& p) {
     p.dump(std::cerr);
     std::cerr << '\n';
     Fatal() << "error in parsing wasm source mapping";
   }
+
+  options.applyOptionsAfterParse(wasm);
 
   // TODO: Validation. However, validating would mean that users are forced to
   //       run with  wasm-dis -all  or such, to enable the features (unless the

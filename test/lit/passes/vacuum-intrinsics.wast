@@ -2,32 +2,34 @@
 ;; RUN: wasm-opt %s --vacuum -all -S -o - | filecheck %s
 
 (module
-  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects (param funcref) (result i32)))
+  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects (type $2) (param funcref) (result i32)))
   (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects (param funcref) (result i32)))
 
-  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-fj (param f32 funcref) (result i64)))
+  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-fj (type $3) (param f32 funcref) (result i64)))
   (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-fj (param f32) (param funcref) (result i64)))
 
-  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-ref (param funcref) (result (ref any))))
+  ;; CHECK:      (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-ref (type $4) (param funcref) (result (ref any))))
   (import "binaryen-intrinsics" "call.without.effects" (func $call.without.effects-ref (param funcref) (result (ref any))))
 
-  ;; CHECK:      (func $used
+  ;; CHECK:      (func $used (type $1) (result i32)
   ;; CHECK-NEXT:  (local $i32 i32)
   ;; CHECK-NEXT:  (local.set $i32
   ;; CHECK-NEXT:   (call $call.without.effects
   ;; CHECK-NEXT:    (ref.func $i)
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
+  ;; CHECK-NEXT:  (local.get $i32)
   ;; CHECK-NEXT: )
-  (func $used
+  (func $used (result i32)
     (local $i32 i32)
     ;; The result is used (by the local.set), so we cannot do anything here.
     (local.set $i32
       (call $call.without.effects (ref.func $i))
     )
+    (local.get $i32)
   )
 
-  ;; CHECK:      (func $unused
+  ;; CHECK:      (func $unused (type $0)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT: )
   (func $unused
@@ -37,7 +39,7 @@
     )
   )
 
-  ;; CHECK:      (func $unused-fj
+  ;; CHECK:      (func $unused-fj (type $0)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT: )
   (func $unused-fj
@@ -47,13 +49,14 @@
     )
   )
 
-  ;; CHECK:      (func $unused-fj-side-effects
+  ;; CHECK:      (func $unused-fj-side-effects (type $5) (result f32)
   ;; CHECK-NEXT:  (local $f32 f32)
   ;; CHECK-NEXT:  (local.set $f32
   ;; CHECK-NEXT:   (f32.const 2.718280076980591)
   ;; CHECK-NEXT:  )
+  ;; CHECK-NEXT:  (local.get $f32)
   ;; CHECK-NEXT: )
-  (func $unused-fj-side-effects
+  (func $unused-fj-side-effects (result f32)
     (local $f32 f32)
     ;; As above, but side effects in the param. We must keep the params around
     ;; and drop them.
@@ -65,9 +68,10 @@
         (ref.func $fj)
       )
     )
+    (local.get $f32)
   )
 
-  ;; CHECK:      (func $unused-unreachable
+  ;; CHECK:      (func $unused-unreachable (type $0)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (call $call.without.effects-fj
   ;; CHECK-NEXT:    (unreachable)
@@ -83,7 +87,7 @@
     )
   )
 
-  ;; CHECK:      (func $used-fallthrough
+  ;; CHECK:      (func $used-fallthrough (type $0)
   ;; CHECK-NEXT:  (local $i32 i32)
   ;; CHECK-NEXT:  (local.set $i32
   ;; CHECK-NEXT:   (if (result i32)
@@ -93,16 +97,20 @@
   ;; CHECK-NEXT:      (ref.func $i)
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
-  ;; CHECK-NEXT:    (block $ifTrue (result i32)
-  ;; CHECK-NEXT:     (call $nop)
-  ;; CHECK-NEXT:     (call $call.without.effects
-  ;; CHECK-NEXT:      (ref.func $i)
+  ;; CHECK-NEXT:    (then
+  ;; CHECK-NEXT:     (block $ifTrue (result i32)
+  ;; CHECK-NEXT:      (call $nop)
+  ;; CHECK-NEXT:      (call $call.without.effects
+  ;; CHECK-NEXT:       (ref.func $i)
+  ;; CHECK-NEXT:      )
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
-  ;; CHECK-NEXT:    (block $ifFalse (result i32)
-  ;; CHECK-NEXT:     (call $nop)
-  ;; CHECK-NEXT:     (call $call.without.effects
-  ;; CHECK-NEXT:      (ref.func $i)
+  ;; CHECK-NEXT:    (else
+  ;; CHECK-NEXT:     (block $ifFalse (result i32)
+  ;; CHECK-NEXT:      (call $nop)
+  ;; CHECK-NEXT:      (call $call.without.effects
+  ;; CHECK-NEXT:       (ref.func $i)
+  ;; CHECK-NEXT:      )
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:   )
@@ -120,19 +128,23 @@
         )
         ;; The arms fall through their blocks and also through the if, and end
         ;; up used by the set.
-        (block $ifTrue (result i32)
-          (call $nop)
-          (call $call.without.effects (ref.func $i))
+        (then
+          (block $ifTrue (result i32)
+            (call $nop)
+            (call $call.without.effects (ref.func $i))
+          )
         )
-        (block $ifFalse (result i32)
-          (call $nop)
-          (call $call.without.effects (ref.func $i))
+        (else
+          (block $ifFalse (result i32)
+            (call $nop)
+            (call $call.without.effects (ref.func $i))
+          )
         )
       )
     )
   )
 
-  ;; CHECK:      (func $unused-fallthrough
+  ;; CHECK:      (func $unused-fallthrough (type $0)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (if (result i32)
   ;; CHECK-NEXT:    (block $condition (result i32)
@@ -141,13 +153,17 @@
   ;; CHECK-NEXT:      (ref.func $i)
   ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
-  ;; CHECK-NEXT:    (block $ifTrue (result i32)
-  ;; CHECK-NEXT:     (call $nop)
-  ;; CHECK-NEXT:     (i32.const 0)
+  ;; CHECK-NEXT:    (then
+  ;; CHECK-NEXT:     (block $ifTrue (result i32)
+  ;; CHECK-NEXT:      (call $nop)
+  ;; CHECK-NEXT:      (i32.const 0)
+  ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
-  ;; CHECK-NEXT:    (block $ifFalse (result i32)
-  ;; CHECK-NEXT:     (call $nop)
-  ;; CHECK-NEXT:     (i32.const 0)
+  ;; CHECK-NEXT:    (else
+  ;; CHECK-NEXT:     (block $ifFalse (result i32)
+  ;; CHECK-NEXT:      (call $nop)
+  ;; CHECK-NEXT:      (i32.const 0)
+  ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
@@ -161,27 +177,35 @@
         )
         ;; As above, but now there is a drop outside the if, so the arms are
         ;; unused and we can optimize them.
-        (block $ifTrue (result i32)
-          (call $nop)
-          (call $call.without.effects (ref.func $i))
+        (then
+          (block $ifTrue (result i32)
+            (call $nop)
+            (call $call.without.effects (ref.func $i))
+          )
         )
-        (block $ifFalse (result i32)
-          (call $nop)
-          (call $call.without.effects (ref.func $i))
+        (else
+          (block $ifFalse (result i32)
+            (call $nop)
+            (call $call.without.effects (ref.func $i))
+          )
         )
       )
     )
   )
 
-  ;; CHECK:      (func $unused-fallthrough-bad-type
+  ;; CHECK:      (func $unused-fallthrough-bad-type (type $0)
   ;; CHECK-NEXT:  (drop
   ;; CHECK-NEXT:   (if (result (ref any))
   ;; CHECK-NEXT:    (call $i)
-  ;; CHECK-NEXT:    (call $call.without.effects-ref
-  ;; CHECK-NEXT:     (ref.func $ref)
+  ;; CHECK-NEXT:    (then
+  ;; CHECK-NEXT:     (call $call.without.effects-ref
+  ;; CHECK-NEXT:      (ref.func $ref)
+  ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
-  ;; CHECK-NEXT:    (call $call.without.effects-ref
-  ;; CHECK-NEXT:     (ref.func $ref)
+  ;; CHECK-NEXT:    (else
+  ;; CHECK-NEXT:     (call $call.without.effects-ref
+  ;; CHECK-NEXT:      (ref.func $ref)
+  ;; CHECK-NEXT:     )
   ;; CHECK-NEXT:    )
   ;; CHECK-NEXT:   )
   ;; CHECK-NEXT:  )
@@ -192,13 +216,17 @@
         (call $i)
         ;; As above, but the type of these unused values prevents us from
         ;; optimizing as we cannot create a "zero" for them.
-        (call $call.without.effects-ref (ref.func $ref))
-        (call $call.without.effects-ref (ref.func $ref))
+        (then
+          (call $call.without.effects-ref (ref.func $ref))
+        )
+        (else
+          (call $call.without.effects-ref (ref.func $ref))
+        )
       )
     )
   )
 
-  ;; CHECK:      (func $i (result i32)
+  ;; CHECK:      (func $i (type $1) (result i32)
   ;; CHECK-NEXT:  (unreachable)
   ;; CHECK-NEXT: )
   (func $i (result i32)
@@ -206,7 +234,7 @@
     (unreachable)
   )
 
-  ;; CHECK:      (func $fj (param $0 f32) (result i64)
+  ;; CHECK:      (func $fj (type $6) (param $0 f32) (result i64)
   ;; CHECK-NEXT:  (unreachable)
   ;; CHECK-NEXT: )
   (func $fj (param f32) (result i64)
@@ -214,7 +242,7 @@
     (unreachable)
   )
 
-  ;; CHECK:      (func $ref (result (ref any))
+  ;; CHECK:      (func $ref (type $7) (result (ref any))
   ;; CHECK-NEXT:  (unreachable)
   ;; CHECK-NEXT: )
   (func $ref (result (ref any))
@@ -223,7 +251,7 @@
   )
 
 
-  ;; CHECK:      (func $nop
+  ;; CHECK:      (func $nop (type $0)
   ;; CHECK-NEXT:  (nop)
   ;; CHECK-NEXT: )
   (func $nop

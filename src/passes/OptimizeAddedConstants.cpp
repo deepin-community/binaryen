@@ -32,20 +32,44 @@
 
 #include <ir/local-graph.h>
 #include <ir/local-utils.h>
-#include <ir/parents.h>
 #include <pass.h>
 #include <wasm-builder.h>
 #include <wasm.h>
 
 namespace wasm {
 
+namespace {
+
+// Similar to Parents from parents.h, but we only care about gets, so it is much
+// more efficient to just collect their parents.
+struct GetParents {
+  GetParents(Expression* expr) { inner.walk(expr); }
+
+  Expression* getParent(LocalGet* curr) const {
+    auto iter = inner.parentMap.find(curr);
+    assert(iter != inner.parentMap.end());
+    return iter->second;
+  }
+
+private:
+  struct Inner : public ExpressionStackWalker<Inner> {
+    void visitLocalGet(LocalGet* curr) { parentMap[curr] = getParent(); }
+
+    std::unordered_map<Expression*, Expression*> parentMap;
+  } inner;
+};
+
+} // anonymous namespace
+
 template<typename P, typename T> class MemoryAccessOptimizer {
 public:
   MemoryAccessOptimizer(P* parent,
                         T* curr,
                         Module* module,
-                        LocalGraph* localGraph)
-    : parent(parent), curr(curr), module(module), localGraph(localGraph) {}
+                        LazyLocalGraph* localGraph)
+    : parent(parent), curr(curr), module(module), localGraph(localGraph) {
+    memory64 = module->getMemory(curr->memory)->is64();
+  }
 
   // Tries to optimize, and returns whether we propagated a change.
   bool optimize() {
@@ -56,7 +80,7 @@ public:
       return false;
     }
     if (auto* add = curr->ptr->template dynCast<Binary>()) {
-      if (add->op == AddInt32) {
+      if (add->op == AddInt32 || add->op == AddInt64) {
         // Look for a constant on both sides.
         if (tryToOptimizeConstant(add->right, add->left) ||
             tryToOptimizeConstant(add->left, add->right)) {
@@ -77,7 +101,7 @@ public:
       //
       // This is only valid if y does not change in the middle!
       if (auto* get = curr->ptr->template dynCast<LocalGet>()) {
-        auto& sets = localGraph->getSetses[get];
+        auto& sets = localGraph->getSets(get);
         if (sets.size() == 1) {
           auto* set = *sets.begin();
           // May be a zero-init (in which case, we can ignore it). Must also be
@@ -109,7 +133,8 @@ private:
   P* parent;
   T* curr;
   Module* module;
-  LocalGraph* localGraph;
+  LazyLocalGraph* localGraph;
+  bool memory64;
 
   void optimizeConstantPointer() {
     // The constant and an offset are interchangeable:
@@ -123,11 +148,23 @@ private:
       // code may know that is valid, even if we can't. Only handle the
       // obviously valid case where an overflow can't occur.
       auto* c = curr->ptr->template cast<Const>();
-      uint32_t base = c->value.geti32();
-      uint32_t offset = curr->offset;
-      if (uint64_t(base) + uint64_t(offset) < (uint64_t(1) << 32)) {
-        c->value = c->value.add(Literal(uint32_t(curr->offset)));
-        curr->offset = 0;
+      if (memory64) {
+        uint64_t base = c->value.geti64();
+        uint64_t offset = curr->offset;
+
+        uint64_t max = std::numeric_limits<uint64_t>::max();
+        bool overflow = (base > max - offset);
+        if (!overflow) {
+          c->value = c->value.add(Literal(offset));
+          curr->offset = 0;
+        }
+      } else {
+        uint32_t base = c->value.geti32();
+        uint32_t offset = curr->offset;
+        if (uint64_t(base) + uint64_t(offset) < (uint64_t(1) << 32)) {
+          c->value = c->value.add(Literal(uint32_t(curr->offset)));
+          curr->offset = 0;
+        }
       }
     }
   }
@@ -174,9 +211,9 @@ private:
         //  y = y + 1
         //  load(x)
         //
-        // This example should not be optimized into
+        // This example should *not* be optimized into
         //
-        //  load(x, offset=10)
+        //  load(y, offset=10)
         //
         // If the other side is a get, we may be able to prove that we can just
         // use that same local, if both it and the pointer are in SSA form. In
@@ -222,9 +259,9 @@ private:
 
   // Sees if we can optimize a particular constant.
   Result canOptimizeConstant(Literal literal) {
-    auto value = literal.geti32();
+    uint64_t value = literal.getInteger();
     // Avoid uninteresting corner cases with peculiar offsets.
-    if (value >= 0 && value < PassOptions::LowMemoryBound) {
+    if (value < PassOptions::LowMemoryBound) {
       // The total offset must not allow reaching reasonable memory
       // by overflowing.
       auto total = curr->offset + value;
@@ -242,11 +279,16 @@ struct OptimizeAddedConstants
                  UnifiedExpressionVisitor<OptimizeAddedConstants>>> {
   bool isFunctionParallel() override { return true; }
 
+  // This pass operates on linear memory, and does not affect reference locals.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
   bool propagate;
 
   OptimizeAddedConstants(bool propagate) : propagate(propagate) {}
 
-  Pass* create() override { return new OptimizeAddedConstants(propagate); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<OptimizeAddedConstants>(propagate);
+  }
 
   void visitLoad(Load* curr) {
     MemoryAccessOptimizer<OptimizeAddedConstants, Load> optimizer(
@@ -265,8 +307,16 @@ struct OptimizeAddedConstants
   }
 
   void doWalkFunction(Function* func) {
-    // This pass is only valid under the assumption of unused low memory.
-    assert(getPassOptions().lowMemoryUnused);
+    if (!getPassOptions().lowMemoryUnused) {
+      Fatal() << "OptimizeAddedConstants can only be run when the "
+              << "--low-memory-unused flag is set.";
+    }
+
+    if (getModule()->memories.empty()) {
+      // There can be no loads and stores without a memory.
+      return;
+    }
+
     // Multiple passes may be needed if we have x + 4 + 8 etc. (nested structs
     // in C can cause this, but it's rare). Note that we only need that for the
     // propagation case (as 4 + 8 would be optimized directly if it were
@@ -276,12 +326,10 @@ struct OptimizeAddedConstants
       helperIndexes.clear();
       propagatable.clear();
       if (propagate) {
-        localGraph = make_unique<LocalGraph>(func);
-        localGraph->computeSetInfluences();
-        localGraph->computeSSAIndexes();
+        localGraph = std::make_unique<LazyLocalGraph>(func, getModule());
         findPropagatable();
       }
-      super::doWalkFunction(func);
+      Super::doWalkFunction(func);
       if (!helperIndexes.empty()) {
         createHelperIndexes();
       }
@@ -312,7 +360,7 @@ struct OptimizeAddedConstants
 private:
   bool propagated;
 
-  std::unique_ptr<LocalGraph> localGraph;
+  std::unique_ptr<LazyLocalGraph> localGraph;
 
   // Whether a set is propagatable.
   std::set<LocalSet*> propagatable;
@@ -328,15 +376,15 @@ private:
     //  g(a, offset=10)
     // but if x has other uses, then avoid doing so - we'll be doing that add
     // anyhow, so the load/store offset trick won't actually help.
-    Parents parents(getFunction()->body);
-    for (auto& [location, _] : localGraph->locations) {
+    GetParents parents(getFunction()->body);
+    for (auto& [location, _] : localGraph->getLocations()) {
       if (auto* set = location->dynCast<LocalSet>()) {
         if (auto* add = set->value->dynCast<Binary>()) {
           if (add->op == AddInt32) {
             if (add->left->is<Const>() || add->right->is<Const>()) {
               // Looks like this might be relevant, check all uses.
               bool canPropagate = true;
-              for (auto* get : localGraph->setInfluences[set]) {
+              for (auto* get : localGraph->getSetInfluences(set)) {
                 auto* parent = parents.getParent(get);
                 // if this is at the top level, it's the whole body - no set can
                 // exist!

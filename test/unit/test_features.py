@@ -51,6 +51,12 @@ class FeatureValidationTest(utils.BinaryenTestCase):
         self.check_feature(module, error, '--enable-gc',
                            ['--enable-reference-types'])
 
+    def check_typed_continuations(self, module, error):
+        # Typed continuations implies function references (which is provided by
+        # gc in binaryen, and implies reference types) and exceptions
+        self.check_feature(module, error, '--enable-typed-continuations',
+                           ['--enable-gc', '--enable-reference-types', '--enable-exception-handling'])
+
     def test_v128_signature(self):
         module = '''
         (module
@@ -98,7 +104,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          )
         )
         '''
-        self.check_simd(module, 'SIMD operation (SIMD is disabled)')
+        self.check_simd(module, 'SIMD operations require SIMD [--enable-simd]')
 
     def test_simd_splat(self):
         module = '''
@@ -130,7 +136,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
         )
         '''
         self.check_bulk_mem(module,
-                            'Bulk memory operation (bulk memory is disabled')
+                            'Bulk memory operations require bulk memory [--enable-bulk-memory]')
 
     def test_bulk_mem_segment(self):
         module = '''
@@ -139,7 +145,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          (data "42")
         )
         '''
-        self.check_bulk_mem(module, 'nonzero segment flags (bulk memory is disabled)')
+        self.check_bulk_mem(module, 'nonzero segment flags require bulk memory [--enable-bulk-memory]')
 
     def test_tail_call(self):
         module = '''
@@ -150,7 +156,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          )
         )
         '''
-        self.check_tail_call(module, 'return_call* requires tail calls to be enabled')
+        self.check_tail_call(module, 'return_call* requires tail calls [--enable-tail-call]')
 
     def test_tail_call_indirect(self):
         module = '''
@@ -164,14 +170,14 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          )
         )
         '''
-        self.check_tail_call(module, 'return_call* requires tail calls to be enabled')
+        self.check_tail_call(module, 'return_call* requires tail calls [--enable-tail-call]')
 
     def test_reference_types_externref(self):
         module = '''
         (module
          (import "env" "test1" (func $test1 (param externref) (result externref)))
          (import "env" "test2" (global $test2 externref))
-         (export "test1" (func $test1 (param externref) (result externref)))
+         (export "test1" (func $test1))
          (export "test2" (global $test2))
          (func $externref_test (param $0 externref) (result externref)
           (return
@@ -193,7 +199,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          )
         )
         '''
-        self.check_exception_handling(module, 'Module has tags')
+        self.check_exception_handling(module, 'Tags require exception-handling [--enable-exception-handling]')
 
     def test_multivalue_import(self):
         module = '''
@@ -201,14 +207,13 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          (import "env" "foo" (func $foo (result i32 i64)))
         )
         '''
-        self.check_multivalue(module, 'Imported multivalue function ' +
-                              '(multivalue is not enabled)')
+        self.check_multivalue(module, 'Imported multivalue function requires multivalue [--enable-multivalue]')
 
     def test_multivalue_function(self):
         module = '''
         (module
          (func $foo (result i32 i64)
-          (tuple.make
+          (tuple.make 2
            (i32.const 42)
            (i64.const 42)
           )
@@ -224,16 +229,15 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          (tag $foo (param i32 i64))
         )
         '''
-        self.check_multivalue_exception_handling(module, 'Multivalue tag type ' +
-                                                 '(multivalue is not enabled)')
+        self.check_multivalue_exception_handling(module, 'Multivalue tag type requires multivalue [--enable-multivalue]')
 
     def test_multivalue_block(self):
         module = '''
         (module
          (func $foo
-          (drop
+          (tuple.drop 2
            (block (result i32 i64)
-            (tuple.make
+            (tuple.make 2
              (i32.const 42)
              (i64.const 42)
             )
@@ -242,8 +246,7 @@ class FeatureValidationTest(utils.BinaryenTestCase):
          )
         )
         '''
-        self.check_multivalue(module, 'Multivalue block type ' +
-                              '(multivalue is not enabled)')
+        self.check_multivalue(module, 'Multivalue block type require multivalue [--enable-multivalue]')
 
     def test_i31_global(self):
         module = '''
@@ -280,6 +283,28 @@ class FeatureValidationTest(utils.BinaryenTestCase):
         )
         '''
         self.check_gc(module, 'all used types should be allowed')
+
+    def test_tag_results(self):
+        module = '''
+        (module
+         (tag $foo (result i32))
+        )
+        '''
+        self.check_typed_continuations(module,
+                                       'Tags with result types require typed '
+                                       'continuations feature [--enable-typed-continuations]')
+
+    def test_cont_type(self):
+        module = '''
+        (module
+         (type $ft (func (param i32) (result i32)))
+         (type $ct (cont $ft))
+         (func $foo
+          (local $0 (ref $ct))
+         )
+        )
+        '''
+        self.check_typed_continuations(module, 'all used types should be allowed')
 
 
 class TargetFeaturesSectionTest(utils.BinaryenTestCase):
@@ -343,7 +368,7 @@ class TargetFeaturesSectionTest(utils.BinaryenTestCase):
         self.roundtrip(filename)
         self.check_features(filename, ['reference-types', 'gc'])
         disassembly = self.disassemble(filename)
-        self.assertIn('anyref', disassembly)
+        self.assertIn('externref', disassembly)
         self.assertIn('eqref', disassembly)
 
     def test_superset(self):
@@ -395,7 +420,11 @@ class TargetFeaturesSectionTest(utils.BinaryenTestCase):
             '--enable-multivalue',
             '--enable-gc',
             '--enable-memory64',
-            '--enable-typed-function-references',
             '--enable-relaxed-simd',
             '--enable-extended-const',
+            '--enable-strings',
+            '--enable-multimemory',
+            '--enable-typed-continuations',
+            '--enable-shared-everything',
+            '--enable-fp16',
         ], p2.stdout.splitlines())

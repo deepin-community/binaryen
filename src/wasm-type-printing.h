@@ -24,6 +24,7 @@
 #include "support/name.h"
 #include "support/utilities.h"
 #include "wasm-type.h"
+#include "wasm.h"
 
 namespace wasm {
 
@@ -52,6 +53,7 @@ template<typename Subclass> struct TypeNameGeneratorBase {
 struct DefaultTypeNameGenerator
   : TypeNameGeneratorBase<DefaultTypeNameGenerator> {
   size_t funcCount = 0;
+  size_t contCount = 0;
   size_t structCount = 0;
   size_t arrayCount = 0;
 
@@ -92,6 +94,39 @@ struct IndexedTypeNameGenerator
     }
   }
 };
+
+// Deduction guide.
+template<typename T> IndexedTypeNameGenerator(T&) -> IndexedTypeNameGenerator<>;
+
+// Prints heap types stored in a module, falling back to the given
+// FallbackGenerator if the module does not have a name for type type.
+template<typename FallbackGenerator = DefaultTypeNameGenerator>
+struct ModuleTypeNameGenerator
+  : TypeNameGeneratorBase<ModuleTypeNameGenerator<FallbackGenerator>> {
+  const Module& wasm;
+  DefaultTypeNameGenerator defaultGenerator;
+  FallbackGenerator& fallback;
+
+  ModuleTypeNameGenerator(const Module& wasm, FallbackGenerator& fallback)
+    : wasm(wasm), fallback(fallback) {}
+
+  // TODO: Use C++20 `requires` to clean this up.
+  template<class T = FallbackGenerator>
+  ModuleTypeNameGenerator(
+    const Module& wasm,
+    std::enable_if_t<std::is_same_v<T, DefaultTypeNameGenerator>>* = nullptr)
+    : ModuleTypeNameGenerator(wasm, defaultGenerator) {}
+
+  TypeNames getNames(HeapType type) {
+    if (auto it = wasm.typeNames.find(type); it != wasm.typeNames.end()) {
+      return it->second;
+    }
+    return fallback.getNames(type);
+  }
+};
+
+// Deduction guide.
+ModuleTypeNameGenerator(const Module&) -> ModuleTypeNameGenerator<>;
 
 } // namespace wasm
 

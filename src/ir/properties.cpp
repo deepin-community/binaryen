@@ -19,21 +19,98 @@
 
 namespace wasm::Properties {
 
-bool isGenerative(Expression* curr, FeatureSet features) {
-  // Practically no wasm instructions are generative. Exceptions occur only in
-  // GC atm.
-  if (!features.hasGC()) {
-    return false;
-  }
+namespace {
 
-  struct Scanner : public PostWalker<Scanner> {
-    bool generative = false;
-    void visitStructNew(StructNew* curr) { generative = true; }
-    void visitArrayNew(ArrayNew* curr) { generative = true; }
-    void visitArrayInit(ArrayInit* curr) { generative = true; }
-  } scanner;
+struct GenerativityScanner : public PostWalker<GenerativityScanner> {
+  bool generative = false;
+
+  void visitCall(Call* curr) {
+    // TODO: We could in principle look at the called function to see if it is
+    //       generative. To do that we'd need to compute generativity like we
+    //       compute global effects (we can't just peek from here, as the
+    //       other function might be modified in parallel).
+    generative = true;
+  }
+  void visitCallIndirect(CallIndirect* curr) { generative = true; }
+  void visitCallRef(CallRef* curr) { generative = true; }
+  void visitStructNew(StructNew* curr) { generative = true; }
+  void visitArrayNew(ArrayNew* curr) { generative = true; }
+  void visitArrayNewData(ArrayNewData* curr) { generative = true; }
+  void visitArrayNewElem(ArrayNewElem* curr) { generative = true; }
+  void visitArrayNewFixed(ArrayNewFixed* curr) { generative = true; }
+};
+
+} // anonymous namespace
+
+bool isGenerative(Expression* curr) {
+  GenerativityScanner scanner;
   scanner.walk(curr);
   return scanner.generative;
+}
+
+// As above, but only checks |curr| and not children.
+bool isShallowlyGenerative(Expression* curr) {
+  GenerativityScanner scanner;
+  scanner.visit(curr);
+  return scanner.generative;
+}
+
+// Checks an expression in a shallow manner (i.e., does not check children) as
+// to whether it is valid in a wasm constant expression.
+static bool isValidInConstantExpression(Module& wasm, Expression* expr) {
+  if (isSingleConstantExpression(expr) || expr->is<StructNew>() ||
+      expr->is<ArrayNew>() || expr->is<ArrayNewFixed>() || expr->is<RefI31>() ||
+      expr->is<StringConst>()) {
+    return true;
+  }
+
+  if (auto* refAs = expr->dynCast<RefAs>()) {
+    if (refAs->op == ExternConvertAny || refAs->op == AnyConvertExtern) {
+      return true;
+    }
+  }
+
+  if (auto* get = expr->dynCast<GlobalGet>()) {
+    auto* g = wasm.getGlobalOrNull(get->name);
+    // This is called from the validator, so we have to handle non-existent
+    // globals gracefully.
+    if (!g) {
+      return false;
+    }
+    // Only gets of immutable globals are constant.
+    if (g->mutable_) {
+      return false;
+    }
+    // Only imported globals are available in constant expressions unless GC is
+    // enabled.
+    return g->imported() || wasm.features.hasGC();
+    // TODO: Check that there are no cycles between globals.
+  }
+
+  if (wasm.features.hasExtendedConst()) {
+    if (auto* bin = expr->dynCast<Binary>()) {
+      if (bin->op == AddInt64 || bin->op == SubInt64 || bin->op == MulInt64 ||
+          bin->op == AddInt32 || bin->op == SubInt32 || bin->op == MulInt32) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+bool isValidConstantExpression(Module& wasm, Expression* expr) {
+  struct Walker : public PostWalker<Walker, UnifiedExpressionVisitor<Walker>> {
+    bool valid = true;
+    void visitExpression(Expression* curr) {
+      if (!isValidInConstantExpression(*getModule(), curr)) {
+        valid = false;
+      }
+    }
+  } walker;
+  walker.setModule(&wasm);
+  walker.walk(expr);
+  return walker.valid;
 }
 
 } // namespace wasm::Properties

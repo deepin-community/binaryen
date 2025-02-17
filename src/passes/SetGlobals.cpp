@@ -25,20 +25,23 @@
 namespace wasm {
 
 struct SetGlobals : public Pass {
-  void run(PassRunner* runner, Module* module) override {
-    Name input = runner->options.getArgument(
-      "set-globals",
-      "SetGlobals usage:  wasm-opt --pass-arg=set-globals@x=y,z=w");
+  // Only modifies globals.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
+  void run(Module* module) override {
+    Name input =
+      getArgument("set-globals",
+                  "SetGlobals usage:  wasm-opt --pass-arg=set-globals@x=y,z=w");
 
     // The input is a set of X=Y pairs separated by commas.
-    String::Split pairs(input.str, ",");
+    String::Split pairs(input.toString(), ",");
     for (auto& pair : pairs) {
       String::Split nameAndValue(pair, "=");
       auto name = nameAndValue[0];
       auto value = nameAndValue[1];
       auto* glob = module->getGlobalOrNull(name);
       if (!glob) {
-        std::cerr << "warning: could not find global: " << name << '\n';
+        Fatal() << "Could not find global: " << name;
       }
       // Parse the input.
       Literal lit;

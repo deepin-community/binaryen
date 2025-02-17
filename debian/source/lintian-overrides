@@ -3,5 +3,3 @@
 # Since emscripten is RC buggy wasm.js is not installed.
 source-is-missing
 
-# false-positive
-license-problem-convert-utf-code

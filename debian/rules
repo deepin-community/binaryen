@@ -1,17 +1,37 @@
 #!/usr/bin/make -f
 #export DH_VERBOSE = 1
 
+include /usr/share/dpkg/pkg-info.mk
+include /usr/share/dpkg/architecture.mk
+
+buildDir = obj-${DEB_HOST_MULTIARCH}
+
+skip_tests_on_archs = s390x hppa powerpc ppc64 sparc64
+
 %:
-	dh $@ --buildsystem=cmake
+	dh $@ --buildsystem=cmake --builddirectory=$(buildDir)
 
 override_dh_auto_configure:
-	dh_auto_configure -- -DBUILD_TESTS=OFF
+	mkdir -p third_party/googletest
+	ln -sf /usr/src/googletest/googletest third_party/googletest/
+	dh_auto_configure -- -DENABLE_WERROR=OFF
 
-override_dh_auto_install:
-	dh_auto_install
+execute_after_dh_auto_install:
+	rm debian/binaryen/usr/bin/binaryen-unittests
+	mkdir -p out
+	for CMD in $(shell ls debian/binaryen/usr/bin/); do \
+		LD_PRELOAD=./debian/binaryen/usr/lib/$(DEB_HOST_MULTIARCH)/libbinaryen.so help2man \
+			--version-string $(DEB_VERSION_UPSTREAM) \
+			--no-info --output out/$$CMD.1 \
+			debian/binaryen/usr/bin/$$CMD; \
+	done
 	# Building wasm.js from source requires emscripten
 	# which would create a circular dependency chain
 	$(RM) debian/binaryen/usr/share/binaryen/wasm.js
 
 override_dh_auto_test:
-	#Don't run the tests
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+ifeq (,$(filter $(DEB_HOST_ARCH),$(skip_tests_on_archs)))
+	python3 check.py --binaryen-bin=$(buildDir)/bin/ --no-abort-on-first-failure --no-torture wasm-opt wasm-dis crash spec gtest
+endif
+endif

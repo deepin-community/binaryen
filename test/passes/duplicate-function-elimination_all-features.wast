@@ -33,8 +33,8 @@
  (func $bar (result i32)
   (unreachable)
  )
- (func "export" (result i32)
-  (call_ref
+ (func $export (export "export") (result i32)
+  (call_ref $func
    (global.get $global$0)
   )
  )

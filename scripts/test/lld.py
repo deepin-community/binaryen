@@ -12,66 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
 import os
 from . import shared
 from . import support
 
 
 def args_for_finalize(filename):
-    ret = ['--global-base=568']
+    ret = []
     if 'safe_stack' in filename:
         ret += ['--check-stack-overflow']
     if 'shared' in filename:
         ret += ['--side-module']
     if 'standalone-wasm' in filename:
         ret += ['--standalone-wasm']
-    if 'no-emit-metadata' in filename:
-        ret += ['--no-emit-metadata']
     return ret
 
 
 def run_test(input_path):
     print('..', input_path)
-    is_passive = '.passive.' in input_path
-    mem_file = input_path + '.mem'
-    extension_arg_map = {
-        '.out': [],
-    }
-    if not is_passive:
-        extension_arg_map.update({
-            '.mem.out': ['--separate-data-segments', mem_file],
-        })
-    for ext, args in extension_arg_map.items():
-        expected_file = input_path + ext
-        if not os.path.exists(expected_file):
-            if ext == '.out':
-                shared.fail_with_error('output ' + expected_file +
-                                       ' does not exist')
-            else:
-                continue
+    expected_file = input_path + '.out'
+    if not os.path.exists(expected_file):
+        shared.fail_with_error('output ' + expected_file +
+                               ' does not exist')
 
-        cmd = shared.WASM_EMSCRIPTEN_FINALIZE + args
-        if '64' in input_path:
-            cmd += ['--enable-memory64', '--bigint']
-        cmd += [input_path, '-S']
-        cmd += args_for_finalize(os.path.basename(input_path))
-        actual = support.run_command(cmd)
+    cmd = list(shared.WASM_EMSCRIPTEN_FINALIZE)
+    if '64' in input_path:
+        cmd += ['--enable-memory64', '--bigint']
+    cmd += [input_path, '-S']
+    cmd += args_for_finalize(os.path.basename(input_path))
+    actual = support.run_command(cmd)
 
-        shared.fail_if_not_identical_to_file(actual, expected_file)
-        if ext == '.out' and '--no-emit-metadata' not in cmd:
-            start = actual.find('--BEGIN METADATA --\n')
-            end = actual.find('-- END METADATA --\n')
-            if start == -1 or end == -1:
-                shared.fail_with_error('json metadata tags not found')
-            the_json = actual[start + len('--BEGIN METADATA --\n'):end]
-            json.loads(the_json)
-
-        if ext == '.mem.out':
-            with open(mem_file) as mf:
-                mem = mf.read()
-                shared.fail_if_not_identical_to_file(mem, input_path + '.mem.mem')
-            os.remove(mem_file)
+    shared.fail_if_not_identical_to_file(actual, expected_file)
 
 
 def test_wasm_emscripten_finalize():
@@ -86,15 +57,9 @@ def update_lld_tests():
 
     for input_path in shared.get_tests(shared.get_test_dir('lld'), ['.wat', '.wasm']):
         print('..', input_path)
-        is_passive = '.passive.' in input_path
-        mem_file = input_path + '.mem'
         extension_arg_map = {
             '.out': [],
         }
-        if not is_passive:
-            extension_arg_map.update({
-                '.mem.out': ['--separate-data-segments', mem_file + '.mem'],
-            })
         for ext, ext_args in extension_arg_map.items():
             out_path = input_path + ext
             if ext != '.out' and not os.path.exists(out_path):

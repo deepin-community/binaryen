@@ -26,24 +26,29 @@ const std::string DEFAULT_PROFILE_EXPORT("__write_profile");
 struct WasmSplitOptions : ToolOptions {
   enum class Mode : unsigned {
     Split,
+    MultiSplit,
     Instrument,
     MergeProfiles,
+    PrintProfile,
   };
   Mode mode = Mode::Split;
   constexpr static size_t NumModes =
-    static_cast<unsigned>(Mode::MergeProfiles) + 1;
+    static_cast<unsigned>(Mode::PrintProfile) + 1;
 
   enum class StorageKind : unsigned {
     InGlobals, // Store profile data in WebAssembly Globals
     InMemory,  // Store profile data in memory, accessible from all threads
+    InSecondaryMemory, // Store profile data in memory separate from main memory
   };
   StorageKind storageKind = StorageKind::InGlobals;
 
+  bool usePlaceholders = true;
+  bool unescape = false;
   bool verbose = false;
   bool emitBinary = true;
   bool symbolMap = false;
   bool placeholderMap = false;
-  bool asyncify = false;
+  bool jspi = false;
 
   // TODO: Remove this. See the comment in wasm-binary.h.
   bool emitModuleNames = false;
@@ -53,6 +58,8 @@ struct WasmSplitOptions : ToolOptions {
 
   std::set<Name> keepFuncs;
   std::set<Name> splitFuncs;
+  bool hasKeepFuncs = false;
+  bool hasSplitFuncs = false;
 
   std::vector<std::string> inputFiles;
   std::string output;
@@ -61,7 +68,11 @@ struct WasmSplitOptions : ToolOptions {
 
   std::string importNamespace;
   std::string placeholderNamespace;
+  std::string secondaryMemoryName;
   std::string exportPrefix;
+
+  std::string manifestFile;
+  std::string outPrefix;
 
   // A hack to ensure the split and instrumented modules have the same table
   // size when using Emscripten's SPLIT_MODULE mode with dynamic linking. TODO:

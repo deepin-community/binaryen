@@ -5,15 +5,18 @@
  ;; CHECK:      (type $none_=>_none (func))
  (type $none_=>_none (func))
  (type $none_=>_i32 (func (result i32)))
- ;; CHECK:      (func $0
+ ;; CHECK:      (func $0 (type $none_=>_none)
  ;; CHECK-NEXT:  (nop)
  ;; CHECK-NEXT: )
  (func $0
   (nop)
  )
- ;; CHECK:      (func $1
+ ;; CHECK:      (func $1 (type $none_=>_none)
  ;; CHECK-NEXT:  (drop
- ;; CHECK-NEXT:   (call_ref
+ ;; CHECK-NEXT:   (block ;; (replaces unreachable CallRef we can't emit)
+ ;; CHECK-NEXT:    (drop
+ ;; CHECK-NEXT:     (unreachable)
+ ;; CHECK-NEXT:    )
  ;; CHECK-NEXT:    (unreachable)
  ;; CHECK-NEXT:   )
  ;; CHECK-NEXT:  )
@@ -29,13 +32,11 @@
   ;; unreachable.)
   (call $0)
   (drop
-   (call_ref
-    (ref.cast
+   (call_ref $none_=>_i32
+    (ref.cast (ref $none_=>_i32)
      (ref.func $0)
-     (rtt.canon $none_=>_i32)
     )
    )
   )
  )
 )
-

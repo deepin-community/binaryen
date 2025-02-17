@@ -30,6 +30,8 @@
 #include "ir/find_all.h"
 #include "ir/lubs.h"
 #include "ir/module-utils.h"
+#include "ir/names.h"
+#include "ir/subtypes.h"
 #include "ir/type-updating.h"
 #include "ir/utils.h"
 #include "pass.h"
@@ -41,15 +43,18 @@ namespace wasm {
 namespace {
 
 struct SignatureRefining : public Pass {
+  // Only changes heap types and parameter types (but not locals).
+  bool requiresNonNullableLocalFixups() override { return false; }
+
   // Maps each heap type to the possible refinement of the types in their
   // signatures. We will fill this during analysis and then use it while doing
   // an update of the types. If a type has no improvement that we can find, it
   // will not appear in this map.
   std::unordered_map<HeapType, Signature> newSignatures;
 
-  void run(PassRunner* runner, Module* module) override {
-    if (getTypeSystem() != TypeSystem::Nominal) {
-      Fatal() << "SignatureRefining requires nominal typing";
+  void run(Module* module) override {
+    if (!module->features.hasGC()) {
+      return;
     }
 
     if (!module->tables.empty()) {
@@ -68,6 +73,15 @@ struct SignatureRefining : public Pass {
       std::vector<Call*> calls;
       std::vector<CallRef*> callRefs;
 
+      // Additional calls to take into account. We store intrinsic calls here,
+      // as they must appear twice: call.without.effects is both a normal call
+      // and also takes a final parameter that is a function reference that is
+      // called, and so two signatures are relevant for it. For the latter, we
+      // add the call as an "extra call" (which is an unusual call, as it has an
+      // extra parameter at the end, the function reference, compared to what we
+      // expect for the signature being called).
+      std::vector<Call*> extraCalls;
+
       // A possibly improved LUB for the results.
       LUBFinder resultsLUB;
 
@@ -81,6 +95,10 @@ struct SignatureRefining : public Pass {
     ModuleUtils::ParallelFunctionAnalysis<Info, Mutable> analysis(
       *module, [&](Function* func, Info& info) {
         if (func->imported()) {
+          // Avoid changing the types of imported functions. Spec and VM support
+          // for that is not yet stable.
+          // TODO: optimize this when possible in the future
+          info.canModify = false;
           return;
         }
         info.calls = std::move(FindAll<Call>(func->body).list);
@@ -98,6 +116,17 @@ struct SignatureRefining : public Pass {
       // called.
       for (auto* call : info.calls) {
         allInfo[module->getFunction(call->target)->type].calls.push_back(call);
+
+        // For call.without.effects, we also add the effective function being
+        // called as well. The final operand is the function reference being
+        // called, which defines that type.
+        if (Intrinsics(*module).isCallWithoutEffects(call)) {
+          auto targetType = call->operands.back()->type;
+          if (!targetType.isRef()) {
+            continue;
+          }
+          allInfo[targetType.getHeapType()].extraCalls.push_back(call);
+        }
       }
 
       // For indirect calls, add each call_ref to the type the call_ref uses.
@@ -111,23 +140,35 @@ struct SignatureRefining : public Pass {
       // Add the function's return LUB to the one for the heap type of that
       // function.
       allInfo[func->type].resultsLUB.combine(info.resultsLUB);
+
+      // If one function cannot be modified, that entire type cannot be.
+      if (!info.canModify) {
+        allInfo[func->type].canModify = false;
+      }
     }
 
-    // We cannot alter the signature of an exported function, as the outside may
-    // notice us doing so. For example, if we turn a parameter from nullable
-    // into non-nullable then callers sending a null will break. Put another
-    // way, we need to see all callers to refine types, and for exports we
-    // cannot do so.
-    // TODO If a function type is passed we should also mark the types used
-    //      there, etc., recursively. For now this code just handles the top-
-    //      level type, which is enough to keep the fuzzer from erroring. More
-    //      generally, we need to decide about adding a "closed-world" flag of
-    //      some kind.
-    for (auto* exportedFunc : ExportUtils::getExportedFunctions(*module)) {
-      allInfo[exportedFunc->type].canModify = false;
+    // Find the public types, which we must not modify.
+    for (auto type : ModuleUtils::getPublicHeapTypes(*module)) {
+      if (type.isFunction()) {
+        allInfo[type].canModify = false;
+      }
     }
 
-    bool refinedResults = false;
+    // For now, do not optimize types that have subtypes. When we modify such a
+    // type we need to modify subtypes as well, similar to the analysis in
+    // TypeRefining, and perhaps we can unify this pass with that. TODO
+    SubTypes subTypes(*module);
+    for (auto& [type, info] : allInfo) {
+      if (!subTypes.getImmediateSubTypes(type).empty()) {
+        info.canModify = false;
+      } else if (type.getDeclaredSuperType()) {
+        // Also avoid modifying types with supertypes, as we do not handle
+        // contravariance here. That is, when we refine parameters we look for
+        // a more refined type, but the type must be *less* refined than the
+        // param type for the parent (or equal) TODO
+        info.canModify = false;
+      }
+    }
 
     // Compute optimal LUBs.
     std::unordered_set<HeapType> seen;
@@ -149,7 +190,7 @@ struct SignatureRefining : public Pass {
 
       auto updateLUBs = [&](const ExpressionList& operands) {
         for (Index i = 0; i < numParams; i++) {
-          paramLUBs[i].noteUpdatableExpression(operands[i]);
+          paramLUBs[i].note(operands[i]->type);
         }
       };
 
@@ -159,6 +200,12 @@ struct SignatureRefining : public Pass {
       for (auto* callRef : info.callRefs) {
         updateLUBs(callRef->operands);
       }
+      for (auto* call : info.extraCalls) {
+        // Note that these intrinsic calls have an extra function reference
+        // param at the end, but updateLUBs looks at |numParams| only, so it
+        // considers just the relevant parameters.
+        updateLUBs(call->operands);
+      }
 
       // Find the final LUBs, and see if we found an improvement.
       std::vector<Type> newParamsTypes;
@@ -166,7 +213,7 @@ struct SignatureRefining : public Pass {
         if (!lub.noted()) {
           break;
         }
-        newParamsTypes.push_back(lub.getBestPossible());
+        newParamsTypes.push_back(lub.getLUB());
       }
       Type newParams;
       if (newParamsTypes.size() < numParams) {
@@ -185,7 +232,7 @@ struct SignatureRefining : public Pass {
         // value, or it can return a value but traps instead etc.).
         newResults = func->getResults();
       } else {
-        newResults = resultsLUB.getBestPossible();
+        newResults = resultsLUB.getLUB();
       }
 
       if (newParams == func->getParams() && newResults == func->getResults()) {
@@ -195,16 +242,7 @@ struct SignatureRefining : public Pass {
       // We found an improvement!
       newSignatures[type] = Signature(newParams, newResults);
 
-      // Update nulls as necessary, now that we are changing things.
-      if (newParams != func->getParams()) {
-        for (auto& lub : paramLUBs) {
-          lub.updateNulls();
-        }
-      }
       if (newResults != func->getResults()) {
-        resultsLUB.updateNulls();
-        refinedResults = true;
-
         // Update the types of calls using the signature.
         for (auto* call : info.calls) {
           if (call->type != Type::unreachable) {
@@ -228,13 +266,19 @@ struct SignatureRefining : public Pass {
     struct CodeUpdater : public WalkerPass<PostWalker<CodeUpdater>> {
       bool isFunctionParallel() override { return true; }
 
+      // Updating parameter types cannot affect validation (only updating var
+      // types types might).
+      bool requiresNonNullableLocalFixups() override { return false; }
+
       SignatureRefining& parent;
       Module& wasm;
 
       CodeUpdater(SignatureRefining& parent, Module& wasm)
         : parent(parent), wasm(wasm) {}
 
-      CodeUpdater* create() override { return new CodeUpdater(parent, wasm); }
+      std::unique_ptr<Pass> create() override {
+        return std::make_unique<CodeUpdater>(parent, wasm);
+      }
 
       void doWalkFunction(Function* func) {
         auto iter = parent.newSignatures.find(func->type);
@@ -243,19 +287,91 @@ struct SignatureRefining : public Pass {
           for (auto param : iter->second.params) {
             newParamsTypes.push_back(param);
           }
-          TypeUpdating::updateParamTypes(func, newParamsTypes, wasm);
+          // Do not update local.get/local.tee here, as we will do so in
+          // GlobalTypeRewriter::updateSignatures, below. (Doing an update here
+          // would leave the IR in an inconsistent state of a partial update;
+          // instead, do the full update at the end.)
+          TypeUpdating::updateParamTypes(
+            func,
+            newParamsTypes,
+            wasm,
+            TypeUpdating::LocalUpdatingMode::DoNotUpdate);
         }
       }
     };
-    CodeUpdater(*this, *module).run(runner, module);
+    CodeUpdater(*this, *module).run(getPassRunner(), module);
 
     // Rewrite the types.
     GlobalTypeRewriter::updateSignatures(newSignatures, *module);
 
-    if (refinedResults) {
-      // After return types change we need to propagate.
-      // TODO: we could do this only in relevant functions perhaps
-      ReFinalize().run(runner, module);
+    // Update intrinsics.
+    updateIntrinsics(module, allInfo);
+
+    // TODO: we could do this only in relevant functions perhaps
+    ReFinalize().run(getPassRunner(), module);
+  }
+
+  template<typename HeapInfoMap>
+  void updateIntrinsics(Module* module, HeapInfoMap& map) {
+    // The call.without.effects intrinsic needs to be updated if we refine the
+    // function reference it receives. Imagine that we have this:
+    //
+    //  (call $call.without.effects
+    //    (ref.func $returns.A)
+    //  )
+    //
+    // If we refined that $returns.A function to actually return a subtype $B,
+    // then now the call.without.effects should return $B, because logically it
+    // is still a direct call to that function. (We could also defer this to
+    // later, if we relaxed validation here, but updating right now is better
+    // for followup optimizations.)
+
+    // Each time we update we create a new import with the proper type. Keep a
+    // map of them to avoid creating more than one for each type.
+    std::unordered_map<HeapType, Function*> newImports;
+
+    auto getImportWithNewResults = [&](Function* import, Type newResults) {
+      auto newType = Signature(import->getParams(), newResults);
+      if (auto iter = newImports.find(newType); iter != newImports.end()) {
+        return iter->second;
+      }
+
+      auto name = Names::getValidFunctionName(*module, import->name);
+      auto newImport =
+        module->addFunction(Builder(*module).makeFunction(name, newType, {}));
+
+      // Copy the binaryen intrinsic module.base import names.
+      newImport->module = import->module;
+      newImport->base = import->base;
+
+      newImports[newType] = newImport;
+      return newImport;
+    };
+
+    for (auto& [_, info] : map) {
+      for (auto* call : info.calls) {
+        if (Intrinsics(*module).isCallWithoutEffects(call)) {
+          auto targetType = call->operands.back()->type;
+          if (!targetType.isRef()) {
+            continue;
+          }
+          auto heapType = targetType.getHeapType();
+          if (!heapType.isSignature()) {
+            continue;
+          }
+          auto newResults = heapType.getSignature().results;
+          if (call->type == newResults) {
+            continue;
+          }
+
+          // The target was refined, so we need to update here. Create a new
+          // import of the refined type, and call that instead.
+          call->target = getImportWithNewResults(
+                           module->getFunction(call->target), newResults)
+                           ->name;
+          call->type = newResults;
+        }
+      }
     }
   }
 };

@@ -53,7 +53,7 @@
 #include "ir/find_all.h"
 #include "ir/literal-utils.h"
 #include "ir/local-graph.h"
-#include "ir/type-updating.h"
+#include "ir/utils.h"
 #include "pass.h"
 #include "support/permutations.h"
 #include "wasm-builder.h"
@@ -74,7 +74,9 @@ struct SSAify : public Pass {
   // FIXME DWARF updating does not handle local changes yet.
   bool invalidatesDWARF() override { return true; }
 
-  Pass* create() override { return new SSAify(allowMerges); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<SSAify>(allowMerges);
+  }
 
   SSAify(bool allowMerges) : allowMerges(allowMerges) {}
 
@@ -84,12 +86,12 @@ struct SSAify : public Pass {
   Function* func;
   // things we add to the function prologue
   std::vector<Expression*> functionPrepends;
+  bool refinalize = false;
 
-  void
-  runOnFunction(PassRunner* runner, Module* module_, Function* func_) override {
+  void runOnFunction(Module* module_, Function* func_) override {
     module = module_;
     func = func_;
-    LocalGraph graph(func);
+    LocalGraph graph(func, module);
     graph.computeSetInfluences();
     graph.computeSSAIndexes();
     // create new local indexes, one for each set
@@ -99,8 +101,10 @@ struct SSAify : public Pass {
     computeGetsAndPhis(graph);
     // add prepends to function
     addPrepends();
-    // Handle non-nullability in new locals we added.
-    TypeUpdating::handleNonDefaultableLocals(func, *module);
+
+    if (refinalize) {
+      ReFinalize().walkFunctionInModule(func, module);
+    }
   }
 
   void createNewIndexes(LocalGraph& graph) {
@@ -116,8 +120,8 @@ struct SSAify : public Pass {
   }
 
   bool hasMerges(LocalSet* set, LocalGraph& graph) {
-    for (auto* get : graph.setInfluences[set]) {
-      if (graph.getSetses[get].size() > 1) {
+    for (auto* get : graph.getSetInfluences(set)) {
+      if (graph.getSets(get).size() > 1) {
         return true;
       }
     }
@@ -127,7 +131,7 @@ struct SSAify : public Pass {
   void computeGetsAndPhis(LocalGraph& graph) {
     FindAll<LocalGet> gets(func->body);
     for (auto* get : gets.list) {
-      auto& sets = graph.getSetses[get];
+      auto& sets = graph.getSets(get);
       if (sets.size() == 0) {
         continue; // unreachable, ignore
       }
@@ -140,10 +144,19 @@ struct SSAify : public Pass {
           // no set, assign param or zero
           if (func->isParam(get->index)) {
             // leave it, it's fine
-          } else {
+          } else if (LiteralUtils::canMakeZero(get->type)) {
             // zero it out
             (*graph.locations[get]) =
               LiteralUtils::makeZero(get->type, *module);
+            // If we replace a local.get with a null then we are refining the
+            // type that the parent receives to a bottom type.
+            if (get->type.isRef()) {
+              refinalize = true;
+            }
+          } else {
+            // No zero exists here, so this is a nondefaultable type. The
+            // default won't be used anyhow, so this value does not really
+            // matter and we have nothing to do.
           }
         }
         continue;

@@ -1,13 +1,16 @@
 Source: binaryen
 Section: devel
 Priority: optional
-Maintainer: Markus Koschany <apo@debian.org>
+Maintainer: Debian Javascript Maintainers <pkg-javascript-devel@alioth-lists.debian.net>
+Uploaders: Markus Koschany <apo@debian.org>, Jérémy Lal <kapouer@melix.org>
 Build-Depends:
  cmake,
  debhelper-compat (= 13),
+ python3,
  libgtest-dev,
- python3
-Standards-Version: 4.6.1
+ help2man,
+ nodejs <!nocheck>,
+Standards-Version: 4.6.2
 Homepage: https://github.com/WebAssembly/binaryen
 Vcs-Git: https://salsa.debian.org/debian/binaryen.git
 Vcs-Browser: https://salsa.debian.org/debian/binaryen

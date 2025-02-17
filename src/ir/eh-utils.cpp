@@ -17,7 +17,6 @@
 #include "ir/eh-utils.h"
 #include "ir/branch-utils.h"
 #include "ir/find_all.h"
-#include "ir/type-updating.h"
 
 namespace wasm {
 
@@ -85,7 +84,7 @@ getFirstPop(Expression* catchBody, bool& isPopNested, Expression**& popPtr) {
         } else {
           isPopNested = true;
         }
-      } else if (firstChild->is<Try>()) {
+      } else if (firstChild->is<Try>() || firstChild->is<TryTable>()) {
         isPopNested = true;
       } else {
         WASM_UNREACHABLE("Unexpected control flow expression");
@@ -157,10 +156,38 @@ void handleBlockNestedPops(Function* func, Module& wasm) {
   for (auto* try_ : trys.list) {
     handleBlockNestedPop(try_, func, wasm);
   }
-  // Pops we handled can be of non-defaultable types, so we may have created
-  // non-nullable type locals. Fix them.
-  TypeUpdating::handleNonDefaultableLocals(func, wasm);
 }
+
+Pop* findPop(Expression* expr) {
+  auto pops = findPops(expr);
+  if (pops.size() == 0) {
+    return nullptr;
+  }
+  assert(pops.size() == 1);
+  return pops[0];
+}
+
+SmallVector<Pop*, 1> findPops(Expression* expr) {
+  SmallVector<Pop*, 1> pops;
+  SmallVector<Expression*, 8> work;
+  work.push_back(expr);
+  while (!work.empty()) {
+    auto* curr = work.back();
+    work.pop_back();
+    if (auto* pop = curr->dynCast<Pop>()) {
+      pops.push_back(pop);
+    } else if (auto* try_ = curr->dynCast<Try>()) {
+      // We don't go into inner catch bodies; pops in inner catch bodies
+      // belong to the inner catches
+      work.push_back(try_->body);
+    } else {
+      for (auto* child : ChildIterator(curr)) {
+        work.push_back(child);
+      }
+    }
+  }
+  return pops;
+};
 
 } // namespace EHUtils
 

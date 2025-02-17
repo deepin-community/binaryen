@@ -1,3 +1,52 @@
+binaryen (120-3) unstable; urgency=medium
+
+  * patch: ignore more nan tests
+
+ -- Jérémy Lal <kapouer@melix.org>  Fri, 14 Feb 2025 12:43:36 +0100
+
+binaryen (120-2) unstable; urgency=medium
+
+  * Fix inverted test
+
+ -- Jérémy Lal <kapouer@melix.org>  Fri, 14 Feb 2025 11:36:03 +0100
+
+binaryen (120-1) unstable; urgency=medium
+
+  * New upstream version 120 (Closes: #1029064).
+  * copyright:
+    + extend years
+    + add paragraph for FP16
+  * tests:
+    + enable gtests again
+    + run a "fast" subset
+    + do not abort on failure
+    + a patch disables some tests that fail on armel
+    + don't test on big-endian (Closes: #1095834)
+    + support nocheck
+  * Maintainer: team pkg-javascript-devel,
+    and AMAU with the authorization of Markus.
+  * Add manpages using help2man. (Closes: #1062579).
+  * configure: don't treat warnings as errors. (Closes:#1015358).
+  * install: drop /usr/bin/binaryen-unittests
+
+ -- Jérémy Lal <kapouer@melix.org>  Thu, 13 Feb 2025 17:08:33 +0100
+
+binaryen (112-1) experimental; urgency=medium
+
+  [ Markus Koschany ]
+  * Remove build-dependency on libgtest-dev.
+
+  [ Debian Janitor ]
+  * Set upstream metadata fields: Bug-Database, Bug-Submit, Repository-Browse.
+    Fixes: lintian: upstream-metadata-file-is-missing
+    Fixes: lintian: upstream-metadata-missing-bug-tracking
+
+  [ Markus Koschany ]
+  * Declare compliance with Debian Policy 4.6.2.
+  * New upstream version 112.
+
+ -- Markus Koschany <apo@debian.org>  Sat, 04 Mar 2023 02:03:14 +0100
+
 binaryen (108-1) unstable; urgency=medium
 
   * New upstream version 108

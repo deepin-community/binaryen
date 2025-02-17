@@ -51,7 +51,13 @@ struct CoalesceLocals
   // FIXME DWARF updating does not handle local changes yet.
   bool invalidatesDWARF() override { return true; }
 
-  Pass* create() override { return new CoalesceLocals; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<CoalesceLocals>();
+  }
+
+  // Branches outside of the function can be ignored, as we only look at locals
+  // which vanish when we leave.
+  bool ignoreBranchesOutsideOfFunc = true;
 
   // main entry point
 
@@ -99,10 +105,14 @@ struct CoalesceLocals
   bool interferes(Index i, Index j) {
     return interferences.get(std::min(i, j), std::max(i, j));
   }
+
+private:
+  // In some cases we need to refinalize at the end.
+  bool refinalize = false;
 };
 
 void CoalesceLocals::doWalkFunction(Function* func) {
-  super::doWalkFunction(func);
+  Super::doWalkFunction(func);
   // prioritize back edges
   increaseBackEdgePriorities();
   // use liveness to find interference
@@ -112,6 +122,10 @@ void CoalesceLocals::doWalkFunction(Function* func) {
   pickIndices(indices);
   // apply indices
   applyIndices(indices, func->body);
+
+  if (refinalize) {
+    ReFinalize().walkFunctionInModule(func, getModule());
+  }
 }
 
 // A copy on a backedge can be especially costly, forcing us to branch just to
@@ -234,9 +248,8 @@ void CoalesceLocals::calculateInterferences() {
       auto index = action.index;
       if (action.isGet()) {
         if (endsLiveRange[i]) {
-          bool erased = live.erase(action.index);
+          [[maybe_unused]] bool erased = live.erase(action.index);
           assert(erased);
-          WASM_UNUSED(erased);
         }
         continue;
       }
@@ -521,21 +534,50 @@ void CoalesceLocals::applyIndices(std::vector<Index>& indices,
           }
         }
         if (auto* subSet = set->value->dynCast<LocalSet>()) {
-          if (subSet->index == set->index) {
+          // Only do so if not only the index matches but also the type. If the
+          // inner type is more refined, leave that for other passes.
+          if (subSet->index == set->index &&
+              subSet->value->type == subSet->type) {
             set->value = subSet->value;
             continue;
           }
         }
-        // remove ineffective actions
+
+        // Remove ineffective actions, that is, dead stores.
+        //
+        // Note that this may have downsides for non-nullable locals:
+        //
+        //   x = whatever; // dead set for validation
+        //   if (..) {
+        //     x = value1;
+        //   } else {
+        //     x = value2;
+        //   }
+        //
+        // The dead set ensures validation, at the cost of extra code size and
+        // slower speed in some tiers (the optimizing tier, at least, will
+        // remove such dead sets anyhow). In theory keeping such a dead set may
+        // be worthwhile, as it may save code size (by keeping the local
+        // non-nullable and avoiding ref.as_non_nulls later). But the tradeoff
+        // here isn't clear, so do the simple thing for now and remove all dead
+        // sets.
         if (!action.effective) {
           // value may have no side effects, further optimizations can eliminate
           // it
-          *action.origin = set->value;
+          auto* value = set->value;
           if (!set->isTee()) {
             // we need to drop it
             Drop* drop = ExpressionManipulator::convert<LocalSet, Drop>(set);
-            drop->value = *action.origin;
+            drop->value = value;
             *action.origin = drop;
+          } else {
+            auto originalType = (*action.origin)->type;
+            if (originalType != set->value->type) {
+              // The value had a more refined type, which we must propagate at
+              // the end.
+              refinalize = true;
+            }
+            *action.origin = set->value;
           }
           continue;
         }
@@ -562,7 +604,9 @@ void CoalesceLocals::applyIndices(std::vector<Index>& indices,
 }
 
 struct CoalesceLocalsWithLearning : public CoalesceLocals {
-  virtual Pass* create() override { return new CoalesceLocalsWithLearning; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<CoalesceLocalsWithLearning>();
+  }
 
   virtual void pickIndices(std::vector<Index>& indices) override;
 };

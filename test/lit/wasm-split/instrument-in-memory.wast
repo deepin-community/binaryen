@@ -1,12 +1,13 @@
-;; RUN: wasm-split %s --instrument --in-memory -all -S -o - | filecheck %s
+;; RUN: wasm-split %s --instrument --in-memory --enable-threads -S -o - | filecheck %s
 
 ;; Check that the output round trips and validates as well
-;; RUN: wasm-split %s --instrument --in-memory -all -g -o %t.wasm
-;; RUN: wasm-opt -all %t.wasm -S -o -
+;; RUN: wasm-split %s --instrument --in-memory --enable-threads -g -o %t.wasm
+;; RUN: wasm-opt %t.wasm --enable-threads -S -o -
 
 (module
   (import "env" "foo" (func $foo))
   (export "bar" (func $bar))
+  (memory $0 1 1)
   (func $bar
     (call $foo)
   )
@@ -48,7 +49,7 @@
 ;; CHECK-NEXT:    (local.get $size)
 ;; CHECK-NEXT:    (i32.const 16)
 ;; CHECK-NEXT:   )
-;; CHECK-NEXT:   (block
+;; CHECK-NEXT:   (then
 ;; CHECK-NEXT:    (i64.store align=1
 ;; CHECK-NEXT:     (local.get $addr)
 ;; CHECK-NEXT:     (i64.const {{.*}})

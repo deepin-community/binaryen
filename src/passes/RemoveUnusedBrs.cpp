@@ -18,16 +18,18 @@
 // Removes branches for which we go to where they go anyhow
 //
 
-#include <ir/branch-utils.h>
-#include <ir/cost.h>
-#include <ir/effects.h>
-#include <ir/gc-type-utils.h>
-#include <ir/literal-utils.h>
-#include <ir/utils.h>
-#include <parsing.h>
-#include <pass.h>
-#include <wasm-builder.h>
-#include <wasm.h>
+#include "ir/branch-utils.h"
+#include "ir/cost.h"
+#include "ir/drop.h"
+#include "ir/effects.h"
+#include "ir/gc-type-utils.h"
+#include "ir/literal-utils.h"
+#include "ir/utils.h"
+#include "parsing.h"
+#include "pass.h"
+#include "support/small_set.h"
+#include "wasm-builder.h"
+#include "wasm.h"
 
 namespace wasm {
 
@@ -80,10 +82,52 @@ static bool canTurnIfIntoBrIf(Expression* ifCondition,
   return !EffectAnalyzer(options, wasm, ifCondition).invalidates(value);
 }
 
-// This leads to similar choices as LLVM does.
-// See https://github.com/WebAssembly/binaryen/pull/4228
-// It can be tuned more later.
-const Index TooCostlyToRunUnconditionally = 9;
+// This leads to similar choices as LLVM does in some cases, by balancing the
+// extra work of code that is run unconditionally with the speedup from not
+// branching to decide whether to run it or not.
+// See:
+//  * https://github.com/WebAssembly/binaryen/pull/4228
+//  * https://github.com/WebAssembly/binaryen/issues/5983
+const Index TooCostlyToRunUnconditionally = 8;
+
+// Some costs are known to be too high to move from conditional to unconditional
+// execution.
+static_assert(CostAnalyzer::AtomicCost >= TooCostlyToRunUnconditionally,
+              "We never run atomics unconditionally");
+static_assert(CostAnalyzer::ThrowCost >= TooCostlyToRunUnconditionally,
+              "We never run throws unconditionally");
+static_assert(CostAnalyzer::CastCost > TooCostlyToRunUnconditionally / 2,
+              "We only run casts unconditionally when optimizing for size");
+
+static bool tooCostlyToRunUnconditionally(const PassOptions& passOptions,
+                                          Index cost) {
+  if (passOptions.shrinkLevel == 0) {
+    // We are focused on speed. Any extra cost is risky, but allow a small
+    // amount.
+    return cost > TooCostlyToRunUnconditionally / 2;
+  } else if (passOptions.shrinkLevel == 1) {
+    // We are optimizing for size in a balanced manner. Allow some extra
+    // overhead here.
+    return cost >= TooCostlyToRunUnconditionally;
+  } else {
+    // We should have already decided what to do if shrink_level=2 and not
+    // gotten here, and other values are invalid.
+    WASM_UNREACHABLE("bad shrink level");
+  }
+}
+
+// As above, but a single expression that we are considering moving to a place
+// where it executes unconditionally.
+static bool tooCostlyToRunUnconditionally(const PassOptions& passOptions,
+                                          Expression* curr) {
+  // If we care entirely about code size, just do it for that reason (early
+  // exit to avoid work).
+  if (passOptions.shrinkLevel >= 2) {
+    return false;
+  }
+  auto cost = CostAnalyzer(curr).cost;
+  return tooCostlyToRunUnconditionally(passOptions, cost);
+}
 
 // Check if it is not worth it to run code unconditionally. This
 // assumes we are trying to run two expressions where previously
@@ -92,33 +136,28 @@ const Index TooCostlyToRunUnconditionally = 9;
 static bool tooCostlyToRunUnconditionally(const PassOptions& passOptions,
                                           Expression* one,
                                           Expression* two) {
-  // If we care mostly about code size, just do it for that reason.
-  if (passOptions.shrinkLevel) {
+  // If we care entirely about code size, just do it for that reason (early
+  // exit to avoid work).
+  if (passOptions.shrinkLevel >= 2) {
     return false;
   }
-  // Consider the cost of executing all the code unconditionally.
-  auto total = CostAnalyzer(one).cost + CostAnalyzer(two).cost;
-  return total >= TooCostlyToRunUnconditionally;
-}
 
-// As above, but a single expression that we are considering moving to a place
-// where it executes unconditionally.
-static bool tooCostlyToRunUnconditionally(const PassOptions& passOptions,
-                                          Expression* curr) {
-  if (passOptions.shrinkLevel) {
-    return false;
-  }
-  return CostAnalyzer(curr).cost >= TooCostlyToRunUnconditionally;
+  // Consider the cost of executing all the code unconditionally, which adds
+  // either the cost of running one or two, so the maximum is the worst case.
+  auto max = std::max(CostAnalyzer(one).cost, CostAnalyzer(two).cost);
+  return tooCostlyToRunUnconditionally(passOptions, max);
 }
 
 struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new RemoveUnusedBrs; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<RemoveUnusedBrs>();
+  }
 
   bool anotherCycle;
 
-  typedef std::vector<Expression**> Flows;
+  using Flows = std::vector<Expression**>;
 
   // list of breaks that are currently flowing. if they reach their target
   // without interference, they can be removed (or their value forwarded TODO)
@@ -200,11 +239,14 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
         if (skip > 0) {
           flows.resize(size - skip);
         }
-        // drop a nop at the end of a block, which prevents a value flowing
-        while (list.size() > 0 && list.back()->is<Nop>()) {
-          list.resize(list.size() - 1);
-          self->anotherCycle = true;
-        }
+      }
+      // Drop a nop at the end of a block, which prevents a value flowing. Note
+      // that this is worth doing regardless of whether we have a name on this
+      // block or not (which the if right above us checks) - such a nop is
+      // always unneeded and can limit later optimizations.
+      while (list.size() > 0 && list.back()->is<Nop>()) {
+        list.resize(list.size() - 1);
+        self->anotherCycle = true;
       }
       // A value flowing is only valid if it is a value that the block actually
       // flows out. If it is never reached, it does not flow out, and may be
@@ -218,15 +260,16 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
         }
       }
     } else if (curr->is<Nop>()) {
-      // ignore (could be result of a previous cycle)
+      // Ignore (could be result of a previous cycle).
       self->stopValueFlow();
-    } else if (curr->is<Loop>()) {
-      // do nothing - it's ok for values to flow out
+    } else if (curr->is<Loop>() || curr->is<TryTable>()) {
+      // Do nothing - it's ok for values to flow out.
+      // TODO: Legacy Try as well?
     } else if (auto* sw = curr->dynCast<Switch>()) {
       self->stopFlow();
       self->optimizeSwitch(sw);
     } else {
-      // anything else stops the flow
+      // Anything else stops the flow.
       self->stopFlow();
     }
   }
@@ -422,13 +465,78 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
     //       later down, see visitLocalSet.
   }
 
+  // A stack of catching expressions that are parents of the current expression,
+  // that is, Try and TryTable.
+  std::vector<Expression*> catchers;
+
+  static void popCatcher(RemoveUnusedBrs* self, Expression** currp) {
+    assert(!self->catchers.empty() && self->catchers.back() == *currp);
+    self->catchers.pop_back();
+  }
+
+  void visitThrow(Throw* curr) {
+    // If a throw will definitely be caught, and it is not a catch with a
+    // reference, then it is just a branch (i.e. the code is using exceptions as
+    // control flow). Turn it into a branch here so that the rest of the pass
+    // can optimize it with all other branches.
+    //
+    // To do so, look at the closest try and see if it will catch us, and
+    // proceed outwards if not.
+    auto thrownTag = curr->tag;
+    for (int i = catchers.size() - 1; i >= 0; i--) {
+      auto* tryy = catchers[i]->dynCast<TryTable>();
+      if (!tryy) {
+        // We do not handle mixtures of Try and TryTable.
+        return;
+      }
+      for (Index j = 0; j < tryy->catchTags.size(); j++) {
+        auto tag = tryy->catchTags[j];
+        // The tag must match, or be a catch_all.
+        if (tag == thrownTag || tag.isNull()) {
+          // This must not be a catch with exnref.
+          if (!tryy->catchRefs[j]) {
+            // Success! Create a break to replace the throw.
+            auto dest = tryy->catchDests[j];
+            auto& wasm = *getModule();
+            Builder builder(wasm);
+            if (!tag.isNull()) {
+              // We are catching a specific tag, so values might be sent.
+              Expression* value = nullptr;
+              if (curr->operands.size() == 1) {
+                value = curr->operands[0];
+              } else if (curr->operands.size() > 1) {
+                value = builder.makeTupleMake(curr->operands);
+              }
+              auto* br = builder.makeBreak(dest, value);
+              replaceCurrent(br);
+              return;
+            }
+
+            // catch_all: no values are sent. Drop the throw's children (while
+            // ignoring parent effects: the parent is a throw, but we have
+            // proven we can remove that effect).
+            auto* br = builder.makeBreak(dest);
+            auto* rep = getDroppedChildrenAndAppend(
+              curr, wasm, getPassOptions(), br, DropMode::IgnoreParentEffects);
+            replaceCurrent(rep);
+            // We modified the code here and may have added a drop, etc., so
+            // stop the flow (rather than re-scan it somehow). We leave
+            // optimizing anything that flows out for later iterations.
+            stopFlow();
+          }
+
+          // Return even if we did not optimize: we found our tag was caught.
+          return;
+        }
+      }
+    }
+  }
+
   // override scan to add a pre and a post check task to all nodes
   static void scan(RemoveUnusedBrs* self, Expression** currp) {
     self->pushTask(visitAny, currp);
 
-    auto* iff = (*currp)->dynCast<If>();
-
-    if (iff) {
+    if (auto* iff = (*currp)->dynCast<If>()) {
       if (iff->condition->type == Type::unreachable) {
         // avoid trying to optimize this, we never reach it anyhow
         return;
@@ -444,9 +552,16 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
       self->pushTask(scan, &iff->ifTrue);
       self->pushTask(clear, currp); // clear all flow after the condition
       self->pushTask(scan, &iff->condition);
-    } else {
-      super::scan(self, currp);
+      return;
     }
+    if ((*currp)->is<TryTable>() || (*currp)->is<Try>()) {
+      // Push the try we are reaching, and add a task to pop it, after all the
+      // tasks that Super::scan will push for its children.
+      self->catchers.push_back(*currp);
+      self->pushTask(popCatcher, currp);
+    }
+
+    Super::scan(self, currp);
   }
 
   // optimizes a loop. returns true if we made changes
@@ -691,7 +806,10 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
     }
 
     struct Optimizer : public PostWalker<Optimizer> {
+      PassOptions& passOptions;
       bool worked = false;
+
+      Optimizer(PassOptions& passOptions) : passOptions(passOptions) {}
 
       void visitBrOn(BrOn* curr) {
         // Ignore unreachable BrOns which we cannot improve anyhow. Note that
@@ -704,48 +822,163 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
           return;
         }
 
-        // First, check for a possible null which would prevent all other
-        // optimizations.
-        // TODO: Look into using BrOnNonNull here, to replace a br_on_func whose
-        // input is (ref null func) with br_on_non_null (as only the null check
-        // would be needed).
-        auto refType = curr->ref->type;
-        if (refType.isNullable()) {
+        Builder builder(*getModule());
+
+        Type refType =
+          Properties::getFallthroughType(curr->ref, passOptions, *getModule());
+        if (refType == Type::unreachable) {
+          // Leave this to DCE.
           return;
         }
+        assert(refType.isRef());
+
+        // When we optimize based on all the fallthrough type information
+        // available, we may need to insert a cast to maintain validity. For
+        // example, in this case we know the cast will succeed, but it would be
+        // invalid to send curr->ref directly:
+        //
+        //   (br_on_cast $l anyref i31ref
+        //     (block (result anyref)
+        //       (ref.i31 ...)))
+        //
+        // We could just always do the cast and leave removing the casts to
+        // OptimizeInstructions, but it's simple enough to avoid unnecessary
+        // casting here.
+        auto maybeCast = [&](Expression* expr, Type type) -> Expression* {
+          assert(expr->type.isRef() && type.isRef());
+          if (Type::isSubType(expr->type, type)) {
+            return expr;
+          }
+          if (HeapType::isSubType(expr->type.getHeapType(),
+                                  type.getHeapType())) {
+            return builder.makeRefAs(RefAsNonNull, expr);
+          }
+          return builder.makeRefCast(expr, type);
+        };
 
         if (curr->op == BrOnNull) {
-          // This cannot be null, so the br is never taken, and the non-null
-          // value flows through.
-          replaceCurrent(curr->ref);
-          worked = true;
+          if (refType.isNull()) {
+            // The branch will definitely be taken.
+            replaceCurrent(builder.makeSequence(builder.makeDrop(curr->ref),
+                                                builder.makeBreak(curr->name)));
+            worked = true;
+            return;
+          }
+          if (refType.isNonNullable()) {
+            // The branch will definitely not be taken.
+            replaceCurrent(maybeCast(curr->ref, curr->type));
+            worked = true;
+            return;
+          }
           return;
         }
+
         if (curr->op == BrOnNonNull) {
-          // This cannot be null, so the br is always taken.
-          replaceCurrent(
-            Builder(*getModule()).makeBreak(curr->name, curr->ref));
-          worked = true;
+          if (refType.isNull()) {
+            // Definitely not taken.
+            replaceCurrent(builder.makeDrop(curr->ref));
+            worked = true;
+            return;
+          }
+          if (refType.isNonNullable()) {
+            // Definitely taken.
+            replaceCurrent(builder.makeBreak(
+              curr->name, maybeCast(curr->ref, curr->getSentType())));
+            worked = true;
+            return;
+          }
           return;
         }
 
-        // Check if the type is the kind we are checking for.
-        auto result = GCTypeUtils::evaluateKindCheck(curr);
+        // Improve the cast target type as much as possible given what we know
+        // about the input. Unlike in BrOn::finalize(), we consider type
+        // information from all the fallthrough values here. We can continue to
+        // further optimizations after this, and those optimizations might even
+        // benefit from this improvement.
+        auto glb = Type::getGreatestLowerBound(curr->castType, refType);
+        if (glb != Type::unreachable && glb != curr->castType) {
+          curr->castType = glb;
+          curr->finalize();
+          worked = true;
+        }
 
-        if (result == GCTypeUtils::Success) {
-          // The type is what we are looking for, so we can switch from BrOn to
-          // a simple br which is always taken.
-          replaceCurrent(
-            Builder(*getModule()).makeBreak(curr->name, curr->ref));
-          worked = true;
-        } else if (result == GCTypeUtils::Failure) {
-          // The type is not what we are looking for, so the branch is never
-          // taken, and the value just flows through.
-          replaceCurrent(curr->ref);
-          worked = true;
+        // Depending on what we know about the cast results, we may be able to
+        // optimize.
+        auto result = GCTypeUtils::evaluateCastCheck(refType, curr->castType);
+        if (curr->op == BrOnCastFail) {
+          result = GCTypeUtils::flipEvaluationResult(result);
+        }
+
+        switch (result) {
+          case GCTypeUtils::Unknown:
+            // Anything could happen, so we cannot optimize.
+            return;
+          case GCTypeUtils::Success: {
+            replaceCurrent(builder.makeBreak(
+              curr->name, maybeCast(curr->ref, curr->getSentType())));
+            worked = true;
+            return;
+          }
+          case GCTypeUtils::Failure: {
+            replaceCurrent(maybeCast(curr->ref, curr->type));
+            worked = true;
+            return;
+          }
+          case GCTypeUtils::SuccessOnlyIfNull: {
+            // TODO: optimize this case using the following replacement, which
+            // avoids using any scratch locals and only does a single null
+            // check, but does require generating a fresh label:
+            //
+            //   (br_on_cast $l (ref null $X) (ref null $Y)
+            //     (...)
+            //   )
+            //     =>
+            //   (block $l' (result (ref $X))
+            //     (br_on_non_null $l' ;; reuses `curr`
+            //       (...)
+            //     )
+            //     (br $l
+            //       (ref.null bot<X>)
+            //     )
+            //   )
+            return;
+          }
+          case GCTypeUtils::SuccessOnlyIfNonNull: {
+            // Perform this replacement:
+            //
+            //   (br_on_cast $l (ref null $X') (ref $X))
+            //     (...)
+            //   )
+            //     =>
+            //   (block (result (ref bot<X>))
+            //     (br_on_non_null $l ;; reuses `curr`
+            //       (...)
+            //     (ref.null bot<X>)
+            //   )
+            curr->ref = maybeCast(
+              curr->ref, Type(curr->getSentType().getHeapType(), Nullable));
+            curr->op = BrOnNonNull;
+            curr->castType = Type::none;
+            curr->type = Type::none;
+
+            assert(curr->ref->type.isRef());
+            auto* refNull = builder.makeRefNull(curr->ref->type.getHeapType());
+            replaceCurrent(builder.makeBlock({curr, refNull}, refNull->type));
+            worked = true;
+            return;
+          }
+          case GCTypeUtils::Unreachable: {
+            // The cast is never executed, possibly because its input type is
+            // uninhabitable. Replace it with unreachable.
+            auto* drop = builder.makeDrop(curr->ref);
+            auto* unreachable = ExpressionManipulator::unreachable(curr);
+            replaceCurrent(builder.makeBlock({drop, unreachable}));
+            worked = true;
+            return;
+          }
         }
       }
-    } optimizer;
+    } optimizer(getPassOptions());
 
     optimizer.setModule(getModule());
     optimizer.doWalkFunction(func);
@@ -763,7 +996,7 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
     // multiple cycles may be needed
     do {
       anotherCycle = false;
-      super::doWalkFunction(func);
+      Super::doWalkFunction(func);
       assert(ifStack.empty());
       // flows may contain returns, which are flowing out and so can be
       // optimized
@@ -799,31 +1032,35 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
       }
     } while (anotherCycle);
 
-    // thread trivial jumps
-    struct JumpThreader : public ControlFlowWalker<JumpThreader> {
-      // map of all value-less breaks and switches going to a block (and not a
-      // loop)
-      std::map<Block*, std::vector<Expression*>> branchesToBlock;
+    // Thread trivial jumps.
+    struct JumpThreader
+      : public PostWalker<JumpThreader,
+                          UnifiedExpressionVisitor<JumpThreader>> {
+      // Map of all labels (branch targets) to the branches going to them. (We
+      // only care about blocks here, and not loops, but for simplicitly we
+      // store all branch targets since blocks are 99% of that set anyhow. Any
+      // loops are ignored later.)
+      std::unordered_map<Name, std::vector<Expression*>> labelToBranches;
 
       bool worked = false;
 
-      void visitBreak(Break* curr) {
-        if (!curr->value) {
-          if (auto* target = findBreakTarget(curr->name)->dynCast<Block>()) {
-            branchesToBlock[target].push_back(curr);
-          }
-        }
-      }
-      void visitSwitch(Switch* curr) {
-        if (!curr->value) {
-          auto names = BranchUtils::getUniqueTargets(curr);
-          for (auto name : names) {
-            if (auto* target = findBreakTarget(name)->dynCast<Block>()) {
-              branchesToBlock[target].push_back(curr);
+      void visitExpression(Expression* curr) {
+        // Find the relevant targets: targets that (as mentioned above) have no
+        // value sent to them.
+        SmallSet<Name, 2> relevantTargets;
+        BranchUtils::operateOnScopeNameUsesAndSentTypes(
+          curr, [&](Name name, Type sent) {
+            if (sent == Type::none) {
+              relevantTargets.insert(name);
             }
-          }
+          });
+
+        // Note ourselves on all relevant targets.
+        for (auto target : relevantTargets) {
+          labelToBranches[target].push_back(curr);
         }
       }
+
       void visitBlock(Block* curr) {
         auto& list = curr->list;
         if (list.size() == 1 && curr->name.is()) {
@@ -852,7 +1089,7 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
       }
 
       void redirectBranches(Block* from, Name to) {
-        auto& branches = branchesToBlock[from];
+        auto& branches = labelToBranches[from->name];
         for (auto* branch : branches) {
           if (BranchUtils::replacePossibleTarget(branch, from->name, to)) {
             worked = true;
@@ -860,10 +1097,8 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
         }
         // if the jump is to another block then we can update the list, and
         // maybe push it even more later
-        if (auto* newTarget = findBreakTarget(to)->dynCast<Block>()) {
-          for (auto* branch : branches) {
-            branchesToBlock[newTarget].push_back(branch);
-          }
+        for (auto* branch : branches) {
+          labelToBranches[to].push_back(branch);
         }
       }
 
@@ -1414,7 +1649,8 @@ struct RemoveUnusedBrs : public WalkerPass<PostWalker<RemoveUnusedBrs>> {
           auto* condition = getProperBrIf(curr)->condition;
           if (auto* binary = condition->dynCast<Binary>()) {
             return binary->right->cast<Const>()->value.geti32();
-          } else if (auto* unary = condition->dynCast<Unary>()) {
+          } else if ([[maybe_unused]] auto* unary =
+                       condition->dynCast<Unary>()) {
             assert(unary->op == EqZInt32);
             return 0;
           } else {

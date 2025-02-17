@@ -8,9 +8,11 @@ set(wasm_SOURCES
   wasm-emscripten.cpp
   wasm-interpreter.cpp
   wasm-io.cpp
-  wasm-s-parser.cpp
+  wasm-ir-builder.cpp
   wasm-stack.cpp
+  wasm-stack-opts.cpp
   wasm-type.cpp
+  wasm-type-shape.cpp
   wasm-validator.cpp
   ${wasm_HEADERS}
 )

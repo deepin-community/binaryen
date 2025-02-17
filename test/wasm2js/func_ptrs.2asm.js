@@ -1,6 +1,6 @@
-import { print_i32 } from 'spectest';
+import * as spectest from 'spectest';
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -11,46 +11,44 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
- var print = env.print_i32;
- function $3() {
+ var spectest = imports.spectest;
+ var print = spectest.print_i32;
+ function $2() {
   return 13 | 0;
  }
  
- function $4($0) {
+ function $3($0) {
   $0 = $0 | 0;
   return $0 + 1 | 0 | 0;
  }
  
- function $5(a) {
+ function $4(a) {
   a = a | 0;
   return a - 2 | 0 | 0;
  }
  
- function $6($0) {
+ function $5($0) {
   $0 = $0 | 0;
   print($0 | 0);
  }
  
  return {
-  "one": $3, 
-  "two": $4, 
-  "three": $5, 
-  "four": $6
+  "one": $2, 
+  "two": $3, 
+  "three": $4, 
+  "four": $5
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); },
-    print_i32
-  });
+var retasmFunc = asmFunc({
+  "spectest": spectest,
+});
 export var one = retasmFunc.one;
 export var two = retasmFunc.two;
 export var three = retasmFunc.three;
 export var four = retasmFunc.four;
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -61,9 +59,6 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  function t1() {
   return 1 | 0;
  }
@@ -84,29 +79,29 @@ function asmFunc(env) {
   return 5 | 0;
  }
  
- function $5(i) {
+ function $0(i) {
   i = i | 0;
   return FUNCTION_TABLE[i | 0]() | 0 | 0;
  }
  
- function $6(i) {
+ function $1(i) {
   i = i | 0;
   return FUNCTION_TABLE[i | 0]() | 0 | 0;
  }
  
  var FUNCTION_TABLE = [t1, t2, t3, u1, u2, t1, t3];
  return {
-  "callt": $5, 
-  "callu": $6
+  "callt": $0, 
+  "callu": $1
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var callt = retasmFunc.callt;
 export var callu = retasmFunc.callu;
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -117,9 +112,6 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  function t1() {
   return 1 | 0;
  }
@@ -128,17 +120,17 @@ function asmFunc(env) {
   return 2 | 0;
  }
  
- function $2(i) {
+ function $0(i) {
   i = i | 0;
   return FUNCTION_TABLE[i | 0]() | 0 | 0;
  }
  
  var FUNCTION_TABLE = [t1, t2];
  return {
-  "callt": $2
+  "callt": $0
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var callt = retasmFunc.callt;

@@ -306,7 +306,9 @@ public:
 
   TrapModePass(TrapMode mode) : mode(mode) { assert(mode != TrapMode::Allow); }
 
-  Pass* create() override { return new TrapModePass(mode); }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<TrapModePass>(mode);
+  }
 
   void visitUnary(Unary* curr) {
     replaceCurrent(makeTrappingUnary(curr, *trappingFunctions));
@@ -319,8 +321,9 @@ public:
   void visitModule(Module* curr) { trappingFunctions->addToModule(); }
 
   void doWalkModule(Module* module) {
-    trappingFunctions = make_unique<TrappingFunctionContainer>(mode, *module);
-    super::doWalkModule(module);
+    trappingFunctions =
+      std::make_unique<TrappingFunctionContainer>(mode, *module);
+    Super::doWalkModule(module);
   }
 
 private:

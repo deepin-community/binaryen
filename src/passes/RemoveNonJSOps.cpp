@@ -42,10 +42,10 @@
 #include "ir/literal-utils.h"
 #include "ir/memory-utils.h"
 #include "ir/module-utils.h"
+#include "parser/wat-parser.h"
 #include "passes/intrinsics-module.h"
 #include "support/insert_ordered.h"
 #include "wasm-builder.h"
-#include "wasm-s-parser.h"
 
 namespace wasm {
 
@@ -56,7 +56,9 @@ struct RemoveNonJSOpsPass : public WalkerPass<PostWalker<RemoveNonJSOpsPass>> {
 
   bool isFunctionParallel() override { return false; }
 
-  Pass* create() override { return new RemoveNonJSOpsPass; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<RemoveNonJSOpsPass>();
+  }
 
   void doWalkModule(Module* module) {
     // Intrinsics may use scratch memory, ensure it.
@@ -65,7 +67,7 @@ struct RemoveNonJSOpsPass : public WalkerPass<PostWalker<RemoveNonJSOpsPass>> {
     // Discover all of the intrinsics that we need to inject, lowering all
     // operations to intrinsic calls while we're at it.
     if (!builder) {
-      builder = make_unique<Builder>(*module);
+      builder = std::make_unique<Builder>(*module);
     }
     PostWalker<RemoveNonJSOpsPass>::doWalkModule(module);
 
@@ -77,11 +79,9 @@ struct RemoveNonJSOpsPass : public WalkerPass<PostWalker<RemoveNonJSOpsPass>> {
     //
     // TODO: only do this once per invocation of wasm2asm
     Module intrinsicsModule;
-    std::string input(IntrinsicsModuleWast);
-    SExpressionParser parser(const_cast<char*>(input.c_str()));
-    Element& root = *parser.root;
-    SExpressionWasmBuilder builder(
-      intrinsicsModule, *root[0], IRProfile::Normal);
+    [[maybe_unused]] auto parsed =
+      WATParser::parseModule(intrinsicsModule, IntrinsicsModuleWast);
+    assert(!parsed.getErr());
 
     std::set<Name> neededFunctions;
 
@@ -122,12 +122,12 @@ struct RemoveNonJSOpsPass : public WalkerPass<PostWalker<RemoveNonJSOpsPass>> {
     }
 
     // Intrinsics may use memory, so ensure the module has one.
-    MemoryUtils::ensureExists(module->memory);
+    MemoryUtils::ensureExists(module);
 
     // Add missing globals
     for (auto& [name, type] : neededImportedGlobals) {
       if (!getModule()->getGlobalOrNull(name)) {
-        auto global = make_unique<Global>();
+        auto global = std::make_unique<Global>();
         global->name = name;
         global->type = type;
         global->mutable_ = false;
@@ -155,7 +155,7 @@ struct RemoveNonJSOpsPass : public WalkerPass<PostWalker<RemoveNonJSOpsPass>> {
 
   void doWalkFunction(Function* func) {
     if (!builder) {
-      builder = make_unique<Builder>(*getModule());
+      builder = std::make_unique<Builder>(*getModule());
     }
     PostWalker<RemoveNonJSOpsPass>::doWalkFunction(func);
   }
@@ -339,7 +339,9 @@ struct StubUnsupportedJSOpsPass
   : public WalkerPass<PostWalker<StubUnsupportedJSOpsPass>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new StubUnsupportedJSOpsPass; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<StubUnsupportedJSOpsPass>();
+  }
 
   void visitUnary(Unary* curr) {
     switch (curr->op) {

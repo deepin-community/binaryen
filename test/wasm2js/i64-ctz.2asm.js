@@ -1,6 +1,6 @@
-import { setTempRet0 } from 'env';
+import * as env from 'env';
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -11,9 +11,7 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
+ var env = imports.env;
  var setTempRet0 = env.setTempRet0;
  var i64toi32_i32$HIGH_BITS = 0;
  function popcnt64($0, $0$hi) {
@@ -134,7 +132,6 @@ function asmFunc(env) {
   var i64toi32_i32$0 = 0, i64toi32_i32$3 = 0, i64toi32_i32$5 = 0, i64toi32_i32$4 = 0, i64toi32_i32$2 = 0, i64toi32_i32$1 = 0, $10 = 0, $5$hi = 0, $8$hi = 0;
   i64toi32_i32$0 = var$0$hi;
   if (!!(var$0 | i64toi32_i32$0 | 0)) {
-   i64toi32_i32$0 = var$0$hi;
    i64toi32_i32$2 = var$0;
    i64toi32_i32$1 = -1;
    i64toi32_i32$3 = -1;
@@ -179,7 +176,7 @@ function asmFunc(env) {
  function __wasm_popcnt_i64(var$0, var$0$hi) {
   var$0 = var$0 | 0;
   var$0$hi = var$0$hi | 0;
-  var i64toi32_i32$0 = 0, i64toi32_i32$2 = 0, i64toi32_i32$5 = 0, i64toi32_i32$4 = 0, i64toi32_i32$3 = 0, i64toi32_i32$1 = 0, var$1$hi = 0, var$1 = 0, $5 = 0, $5$hi = 0, $4 = 0, $9$hi = 0;
+  var i64toi32_i32$0 = 0, i64toi32_i32$2 = 0, i64toi32_i32$5 = 0, i64toi32_i32$4 = 0, i64toi32_i32$3 = 0, i64toi32_i32$1 = 0, var$1$hi = 0, var$1 = 0, $4 = 0, $5 = 0, $5$hi = 0, $9$hi = 0;
   label$1 : {
    label$2 : while (1) {
     i64toi32_i32$0 = var$1$hi;
@@ -191,7 +188,6 @@ function asmFunc(env) {
     if ($4) {
      break label$1
     }
-    i64toi32_i32$0 = $5$hi;
     i64toi32_i32$0 = var$0$hi;
     i64toi32_i32$2 = var$0;
     i64toi32_i32$1 = 0;
@@ -233,8 +229,8 @@ function asmFunc(env) {
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); },
-    setTempRet0
-  });
+var retasmFunc = asmFunc({
+  "env": env,
+});
 export var a = retasmFunc.a;
 export var b = retasmFunc.b;

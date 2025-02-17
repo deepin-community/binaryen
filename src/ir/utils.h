@@ -119,7 +119,13 @@ struct ReFinalize
   : public WalkerPass<PostWalker<ReFinalize, OverriddenVisitor<ReFinalize>>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new ReFinalize; }
+  // Re-running finalize() does not change the types of locals, so validation is
+  // preserved.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<ReFinalize>();
+  }
 
   ReFinalize() { name = "refinalize"; }
 
@@ -132,13 +138,12 @@ struct ReFinalize
 
 #include "wasm-delegations.def"
 
-  void visitFunction(Function* curr);
-
   void visitExport(Export* curr);
   void visitGlobal(Global* curr);
   void visitTable(Table* curr);
   void visitElementSegment(ElementSegment* curr);
   void visitMemory(Memory* curr);
+  void visitDataSegment(DataSegment* curr);
   void visitTag(Tag* curr);
   void visitModule(Module* curr);
 
@@ -163,6 +168,7 @@ struct ReFinalizeNode : public OverriddenVisitor<ReFinalizeNode> {
   void visitTable(Table* curr) { WASM_UNREACHABLE("unimp"); }
   void visitElementSegment(ElementSegment* curr) { WASM_UNREACHABLE("unimp"); }
   void visitMemory(Memory* curr) { WASM_UNREACHABLE("unimp"); }
+  void visitDataSegment(DataSegment* curr) { WASM_UNREACHABLE("unimp"); }
   void visitTag(Tag* curr) { WASM_UNREACHABLE("unimp"); }
   void visitModule(Module* curr) { WASM_UNREACHABLE("unimp"); }
 
@@ -183,7 +189,9 @@ struct ReFinalizeNode : public OverriddenVisitor<ReFinalizeNode> {
 struct AutoDrop : public WalkerPass<ExpressionStackWalker<AutoDrop>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new AutoDrop; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<AutoDrop>();
+  }
 
   AutoDrop() { name = "autodrop"; }
 

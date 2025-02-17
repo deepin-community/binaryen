@@ -28,11 +28,14 @@
 //
 
 #include "ir/find_all.h"
+#include "ir/intrinsics.h"
 #include "ir/lubs.h"
 #include "ir/module-utils.h"
+#include "ir/subtypes.h"
 #include "ir/type-updating.h"
 #include "param-utils.h"
 #include "pass.h"
+#include "support/insert_ordered.h"
 #include "support/sorted_vector.h"
 #include "wasm-type.h"
 #include "wasm.h"
@@ -42,14 +45,13 @@ namespace wasm {
 namespace {
 
 struct SignaturePruning : public Pass {
-  // Maps each heap type to the possible pruned heap type. We will fill this
-  // during analysis and then use it while doing an update of the types. If a
-  // type has no improvement that we can find, it will not appear in this map.
-  std::unordered_map<HeapType, Signature> newSignatures;
+  void run(Module* module) override {
+    if (!module->features.hasGC()) {
+      return;
+    }
 
-  void run(PassRunner* runner, Module* module) override {
-    if (getTypeSystem() != TypeSystem::Nominal) {
-      Fatal() << "SignaturePruning requires nominal typing";
+    if (!getPassOptions().closedWorld) {
+      Fatal() << "SignaturePruning requires --closed-world";
     }
 
     if (!module->tables.empty()) {
@@ -60,6 +62,16 @@ struct SignaturePruning : public Pass {
       return;
     }
 
+    // The first iteration may suggest additional work is possible. If so, run
+    // another cycle. (Even more cycles may help, but limit ourselves to 2 for
+    // now.)
+    if (iteration(module)) {
+      iteration(module);
+    }
+  }
+
+  // Returns true if more work is possible.
+  bool iteration(Module* module) {
     // First, find all the information we need. Start by collecting inside each
     // function in parallel.
 
@@ -84,7 +96,7 @@ struct SignaturePruning : public Pass {
 
         info.calls = std::move(FindAll<Call>(func->body).list);
         info.callRefs = std::move(FindAll<CallRef>(func->body).list);
-        info.usedParams = ParamUtils::getUsedParams(func);
+        info.usedParams = ParamUtils::getUsedParams(func, module);
       });
 
     // A map of types to all the information combined over all the functions
@@ -92,14 +104,40 @@ struct SignaturePruning : public Pass {
     std::unordered_map<HeapType, Info> allInfo;
 
     // Map heap types to all functions with that type.
-    std::unordered_map<HeapType, std::vector<Function*>> sigFuncs;
+    InsertOrderedMap<HeapType, std::vector<Function*>> sigFuncs;
 
-    // Combine all the information we gathered into that map.
-    for (auto& [func, info] : analysis.map) {
+    // Heap types of call targets that we found we should localize calls to, in
+    // order to fully handle them. (See similar code in DeadArgumentElimination
+    // for individual functions; here we handle a HeapType at a time.) A slight
+    // complication is that we cannot track heap types here: heap types are
+    // rewritten using |GlobalTypeRewriter::updateSignatures| below, and even
+    // types that we do not modify end up replaced (as the entire set of types
+    // becomes one new big rec group). We therefore need something more stable
+    // to track here, which we do using either a Call or a Call Ref.
+    std::unordered_set<Expression*> callTargetsToLocalize;
+
+    // Combine all the information we gathered into that map, iterating in a
+    // deterministic order as we build up vectors where the order matters.
+    for (auto& f : module->functions) {
+      auto* func = f.get();
+      auto& info = analysis.map[func];
+
       // For direct calls, add each call to the type of the function being
       // called.
       for (auto* call : info.calls) {
         allInfo[module->getFunction(call->target)->type].calls.push_back(call);
+
+        // Intrinsics limit our ability to optimize in some cases. We will avoid
+        // modifying any type that is used by call.without.effects, to avoid
+        // the complexity of handling that. After intrinsics are lowered,
+        // this optimization will be able to run at full power anyhow.
+        if (Intrinsics(*module).isCallWithoutEffects(call)) {
+          // The last operand is the actual call target.
+          auto* target = call->operands.back();
+          if (target->type != Type::unreachable) {
+            allInfo[target->type.getHeapType()].optimizable = false;
+          }
+        }
       }
 
       // For indirect calls, add each call_ref to the type the call_ref uses.
@@ -124,15 +162,34 @@ struct SignaturePruning : public Pass {
       sigFuncs[func->type].push_back(func);
     }
 
-    // Exported functions cannot be modified.
-    for (auto& exp : module->exports) {
-      if (exp->kind == ExternalKind::Function) {
-        auto* func = module->getFunction(exp->value);
-        allInfo[func->type].optimizable = false;
+    // Find the public types, which cannot be modified.
+    for (auto type : ModuleUtils::getPublicHeapTypes(*module)) {
+      if (type.isFunction()) {
+        allInfo[type].optimizable = false;
       }
     }
 
+    // A type must have the same number of parameters and results as its
+    // supertypes and subtypes, so we only attempt to modify types without
+    // supertypes or subtypes.
+    // TODO We could handle "cycles" where we remove fields from a group of
+    //      types with subtyping relations at once.
+    SubTypes subTypes(*module);
+
+    // Maps each heap type to the possible pruned signature. We will fill this
+    // during analysis and then use it while doing an update of the types. If a
+    // type has no improvement that we can find, it will not appear in this map.
+    std::unordered_map<HeapType, Signature> newSignatures;
+
     // Find parameters to prune.
+    //
+    // TODO: The order matters here, and more than one cycle can find more work
+    //       in some cases, as finding a parameter is a constant and removing it
+    //       can lead to another call (that receives that parameter's value) to
+    //       now have constant parameters as well, and so it becomes
+    //       optimizable. We could do a topological sort or greatest fixed point
+    //       analysis to be optimal (that could handle a recursive call with a
+    //       constant).
     for (auto& [type, funcs] : sigFuncs) {
       auto sig = type.getSignature();
       auto& info = allInfo[type];
@@ -143,10 +200,10 @@ struct SignaturePruning : public Pass {
         continue;
       }
 
-      // A type with a signature supertype cannot be optimized: we'd need to
-      // remove the field from the super as well, which atm we don't attempt to
-      // do. TODO
-      if (auto super = type.getSuperType()) {
+      if (!subTypes.getImmediateSubTypes(type).empty()) {
+        continue;
+      }
+      if (auto super = type.getDeclaredSuperType()) {
         if (super->isSignature()) {
           continue;
         }
@@ -177,8 +234,23 @@ struct SignaturePruning : public Pass {
       }
 
       auto oldParams = sig.params;
-      auto removedIndexes = ParamUtils::removeParameters(
-        funcs, unusedParams, info.calls, info.callRefs, module, runner);
+      auto [removedIndexes, outcome] =
+        ParamUtils::removeParameters(funcs,
+                                     unusedParams,
+                                     info.calls,
+                                     info.callRefs,
+                                     module,
+                                     getPassRunner());
+      if (outcome == ParamUtils::RemovalOutcome::Failure) {
+        // Use either a Call or a CallRef that has this type (see explanation
+        // above on |callTargetsToLocalize|.
+        if (!info.calls.empty()) {
+          callTargetsToLocalize.insert(info.calls[0]);
+        } else {
+          assert(!info.callRefs.empty());
+          callTargetsToLocalize.insert(info.callRefs[0]);
+        }
+      }
       if (removedIndexes.empty()) {
         continue;
       }
@@ -220,6 +292,31 @@ struct SignaturePruning : public Pass {
 
     // Rewrite the types.
     GlobalTypeRewriter::updateSignatures(newSignatures, *module);
+
+    if (callTargetsToLocalize.empty()) {
+      return false;
+    }
+
+    // Localize after updating signatures, to not interfere with that
+    // operation (localization adds locals, and the indexes of locals must be
+    // taken into account in |GlobalTypeRewriter::updateSignatures| (as var
+    // indexes change when params are pruned).
+    std::unordered_set<HeapType> callTargetTypes;
+    for (auto* call : callTargetsToLocalize) {
+      HeapType type;
+      if (auto* c = call->dynCast<Call>()) {
+        type = module->getFunction(c->target)->type;
+      } else if (auto* c = call->dynCast<CallRef>()) {
+        type = c->target->type.getHeapType();
+      } else {
+        WASM_UNREACHABLE("bad call");
+      }
+      callTargetTypes.insert(type);
+    }
+
+    ParamUtils::localizeCallsTo(callTargetTypes, *module, getPassRunner());
+
+    return true;
   }
 };
 

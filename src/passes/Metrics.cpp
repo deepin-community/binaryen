@@ -24,7 +24,7 @@
 
 namespace wasm {
 
-typedef std::map<const char*, int> Counts;
+using Counts = std::map<const char*, int>;
 
 static Counts lastCounts;
 
@@ -45,6 +45,13 @@ struct Metrics
   }
 
   void doWalkModule(Module* module) {
+    std::string title = getArgumentOrDefault("metrics", "");
+    std::cout << "Metrics";
+    if (!title.empty()) {
+      std::cout << ": " << title;
+    }
+    std::cout << '\n';
+
     ImportInfo imports(*module);
 
     // global things
@@ -53,32 +60,37 @@ struct Metrics
     }
     ModuleUtils::iterDefinedGlobals(*module,
                                     [&](Global* curr) { walkGlobal(curr); });
-    walkMemory(&module->memory);
 
-    // add imports / funcs / globals / exports / tables
+    // add imports / funcs / globals / exports / tables / memories
     counts["[imports]"] = imports.getNumImports();
     counts["[funcs]"] = imports.getNumDefinedFunctions();
     counts["[globals]"] = imports.getNumDefinedGlobals();
     counts["[tags]"] = imports.getNumDefinedTags();
     counts["[exports]"] = module->exports.size();
     counts["[tables]"] = imports.getNumDefinedTables();
-    // add memory and table
-    if (module->memory.exists) {
-      Index size = 0;
-      for (auto& segment : module->memory.segments) {
-        size += segment.data.size();
-      }
+    counts["[memories]"] = imports.getNumDefinedMemories();
+
+    // add memory
+    for (auto& memory : module->memories) {
+      walkMemory(memory.get());
+    }
+    Index size = 0;
+    for (auto& segment : module->dataSegments) {
+      walkDataSegment(segment.get());
+      size += segment->data.size();
+    }
+    if (!module->memories.empty()) {
       counts["[memory-data]"] = size;
     }
 
-    Index size = 0;
-    ModuleUtils::iterActiveElementSegments(
-      *module, [&](ElementSegment* segment) { size += segment->data.size(); });
+    // add table
+    size = 0;
     for (auto& table : module->tables) {
       walkTable(table.get());
     }
     for (auto& segment : module->elementSegments) {
       walkElementSegment(segment.get());
+      size += segment->data.size();
     }
     if (!module->tables.empty()) {
       counts["[table-data]"] = size;
@@ -89,7 +101,7 @@ struct Metrics
       printCounts("global");
       // compute binary info, so we know function sizes
       BufferWithRandomAccess buffer;
-      WasmBinaryWriter writer(module, buffer);
+      WasmBinaryWriter writer(module, buffer, getPassOptions());
       writer.write();
       // print for each function
       Index binaryIndex = 0;
@@ -99,18 +111,18 @@ struct Metrics
         counts["[vars]"] = func->getNumVars();
         counts["[binary-bytes]"] =
           writer.tableOfContents.functionBodies[binaryIndex++].size;
-        printCounts(std::string("func: ") + func->name.str);
+        printCounts(std::string("func: ") + func->name.toString());
       });
       // print for each export how much code size is due to it, i.e.,
       // how much the module could shrink without it.
-      auto sizeAfterGlobalCleanup = [](Module* module) {
+      auto sizeAfterGlobalCleanup = [&](Module* module) {
         PassRunner runner(module,
                           PassOptions::getWithDefaultOptimizationOptions());
         runner.setIsNested(true);
         runner.addDefaultGlobalOptimizationPostPasses(); // remove stuff
         runner.run();
         BufferWithRandomAccess buffer;
-        WasmBinaryWriter writer(module, buffer);
+        WasmBinaryWriter writer(module, buffer, getPassOptions());
         writer.write();
         return buffer.size();
       };
@@ -129,8 +141,8 @@ struct Metrics
         counts.clear();
         counts["[removable-bytes-without-it]"] =
           baseline - sizeAfterGlobalCleanup(&test);
-        printCounts(std::string("export: ") + exp->name.str + " (" +
-                    exp->value.str + ')');
+        printCounts(std::string("export: ") + exp->name.toString() + " (" +
+                    exp->value.toString() + ')');
       }
       // check how much size depends on the start method
       if (!module->start.isNull()) {
@@ -140,7 +152,7 @@ struct Metrics
         counts.clear();
         counts["[removable-bytes-without-it]"] =
           baseline - sizeAfterGlobalCleanup(&test);
-        printCounts(std::string("start: ") + module->start.str);
+        printCounts(std::string("start: ") + module->start.toString());
       }
       // can't compare detailed info between passes yet
       lastCounts.clear();

@@ -36,15 +36,17 @@ struct PassRegistry {
 
   static PassRegistry* get();
 
-  typedef std::function<Pass*()> Creator;
+  using Creator = std::function<Pass*()>;
 
   void registerPass(const char* name, const char* description, Creator create);
+
   // Register a pass that's used for internal testing. These passes do not show
   // up in --help.
   void
   registerTestPass(const char* name, const char* description, Creator create);
   std::unique_ptr<Pass> createPass(std::string name);
   std::vector<std::string> getRegisteredNames();
+  bool containsPass(const std::string& name);
   std::string getPassDescription(std::string name);
   bool isPassHidden(std::string name);
 
@@ -67,13 +69,15 @@ struct InliningOptions {
   // Typically a size so small that after optimizations, the inlined code will
   // be smaller than the call instruction itself. 2 is a safe number because
   // there is no risk of things like
+  //
   //  (func $reverse (param $x i32) (param $y i32)
   //   (call $something (local.get $y) (local.get $x))
   //  )
-  // in which case the reversing of the params means we'll possibly need
-  // a block and a temp local. But that takes at least 3 nodes, and 2 < 3.
-  // More generally, with 2 items we may have a local.get, but no way to
-  // require it to be saved instead of directly consumed.
+  //
+  // in which case the reversing of the params means we'll possibly need a temp
+  // local. But that takes at least 3 nodes, and 2 < 3, while with 2 items we
+  // may have a local.get, but no way to require it to be saved instead of
+  // directly consumed.
   Index alwaysInlineMaxSize = 2;
   // Function size which we inline when there is only one caller. By default we
   // inline all such functions (as after inlining we can remove the original
@@ -95,13 +99,20 @@ struct InliningOptions {
   Index partialInliningIfs = 0;
 };
 
+// Forward declaration for FuncEffectsMap.
+class EffectAnalyzer;
+
+using FuncEffectsMap = std::unordered_map<Name, EffectAnalyzer>;
+
 struct PassOptions {
+  friend Pass;
+
   // Run passes in debug mode, doing extra validation and timing checks.
   bool debug = false;
   // Whether to run the validator to check for errors.
   bool validate = true;
   // When validating validate globally and not just locally
-  bool validateGlobally = false;
+  bool validateGlobally = true;
   // 0, 1, 2 correspond to -O0, -O1, -O2, etc.
   int optimizeLevel = 0;
   // 0, 1, 2 correspond to -O0, -Os, -Oz
@@ -140,6 +151,25 @@ struct PassOptions {
   // neither of those can happen (and it is undefined behavior if they do).
   //
   // TODO: deprecate and remove ignoreImplicitTraps.
+  //
+  // Since trapsNeverHappen assumes a trap is never reached, it can in principle
+  // remove code like this:
+  //
+  //   (i32.store ..)
+  //   (unreachable)
+  //
+  // The trap isn't reached, by assumption, and if we reach the store then we'd
+  // reach the trap, so we can assume that isn't reached either, and TNH can
+  // remove both. We do have a specific limitation here, however, which is that
+  // trapsNeverHappen cannot remove calls to *imports*. We assume that an import
+  // might do things we cannot understand, so we never eliminate it. For
+  // example, in LLVM output we might see this:
+  //
+  //   (call $abort) ;; a noreturn import - the process is halted with an error
+  //   (unreachable)
+  //
+  // That trap is never actually reached since the abort halts execution. In TNH
+  // we can remove the trap but not the call right before it.
   bool trapsNeverHappen = false;
   // Optimize assuming that the low 1K of memory is not valid memory for the
   // application to use. In that case, we can optimize load/store offsets in
@@ -160,11 +190,61 @@ struct PassOptions {
   // creates it and we know it is all zeros right before the active segments are
   // applied.)
   bool zeroFilledMemory = false;
+  // Assume code outside of the module does not inspect or interact with GC and
+  // function references, with the goal of being able to aggressively optimize
+  // all user-defined types. The outside may hold on to references and pass them
+  // back in, but may not inspect their contents, call them, or reflect on their
+  // types in any way.
+  //
+  // By default we do not make this assumption, and assume anything that escapes
+  // to the outside may be inspected in detail, which prevents us from e.g.
+  // changing the type of any value that may escape except by refining it (so we
+  // can't remove or refine fields on an escaping struct type, for example,
+  // unless the new type declares the original type as a supertype).
+  //
+  // Note that the module can still have imports and exports - otherwise it
+  // could do nothing at all! - so the meaning of "closed world" is a little
+  // subtle here. We do still want to keep imports and exports unchanged, as
+  // they form a contract with the outside world. For example, if an import has
+  // two parameters, we can't remove one of them. A nuance regarding that is how
+  // type equality works between wasm modules using the isorecursive type
+  // system: not only do we need to not remove a parameter as just mentioned,
+  // but we also want to keep types of things on the boundary unchanged. For
+  // example, we should not change an exported function's signature, as the
+  // outside may need that type to properly call the export.
+  bool closedWorld = false;
   // Whether to try to preserve debug info through, which are special calls.
   bool debugInfo = false;
+  // Whether to generate StackIR during binary writing. This is on by default
+  // in -O2 and above.
+  bool generateStackIR = false;
+  // Whether to optimize StackIR during binary writing. How we optimize depends
+  // on other optimization flags like optimizeLevel. This is on by default in
+  // -O2 and above.
+  bool optimizeStackIR = false;
+  // Whether to print StackIR during binary writing, and if so to what stream.
+  // This is mainly useful for debugging.
+  std::optional<std::ostream*> printStackIR;
+  // Whether we are targeting JS. In that case we want to avoid emitting things
+  // in the optimizer that do not translate well to JS, or that could cause us
+  // to need extra lowering work or even a loop (where we optimize to something
+  // that needs lowering, then we lower it, then we can optimize it again to the
+  // original form).
+  bool targetJS = false;
   // Arbitrary string arguments from the commandline, which we forward to
   // passes.
-  std::map<std::string, std::string> arguments;
+  std::unordered_map<std::string, std::string> arguments;
+  // Passes to skip and not run.
+  std::unordered_set<std::string> passesToSkip;
+
+  // Effect info computed for functions. One pass can generate this and then
+  // other passes later can benefit from it. It is up to the sequence of passes
+  // to update or discard this when necessary - in particular, when new effects
+  // are added to a function this must be changed or we may optimize
+  // incorrectly. However, it is extremely rare for a pass to *add* effects;
+  // passes normally only remove effects. Passes that do add effects must set
+  // addsEffects() so the pass runner is aware of them.
+  std::shared_ptr<FuncEffectsMap> funcEffectsMap;
 
   // -Os is our default
   static constexpr const int DEFAULT_OPTIMIZE_LEVEL = 2;
@@ -185,15 +265,18 @@ struct PassOptions {
     return PassOptions(); // defaults are to not optimize
   }
 
+private:
+  bool hasArgument(std::string key) { return arguments.count(key) > 0; }
+
   std::string getArgument(std::string key, std::string errorTextIfMissing) {
-    if (arguments.count(key) == 0) {
+    if (!hasArgument(key)) {
       Fatal() << errorTextIfMissing;
     }
     return arguments[key];
   }
 
   std::string getArgumentOrDefault(std::string key, std::string default_) {
-    if (arguments.count(key) == 0) {
+    if (!hasArgument(key)) {
       return default_;
     }
     return arguments[key];
@@ -217,6 +300,8 @@ struct PassRunner {
   PassRunner(const PassRunner&) = delete;
   PassRunner& operator=(const PassRunner&) = delete;
 
+  virtual ~PassRunner() = default;
+
   // But we can make it easy to create a nested runner
   // TODO: Go through and use this in more places
   explicit PassRunner(const PassRunner* runner)
@@ -234,14 +319,14 @@ struct PassRunner {
   }
 
   // Add a pass using its name.
-  void add(std::string passName) {
-    doAdd(PassRegistry::get()->createPass(passName));
-  }
+  void add(std::string passName,
+           std::optional<std::string> passArg = std::nullopt);
 
   // Add a pass given an instance.
-  template<class P> void add(std::unique_ptr<P> pass) {
-    doAdd(std::move(pass));
-  }
+  void add(std::unique_ptr<Pass> pass) { doAdd(std::move(pass)); }
+
+  // Clears away all passes that have been added.
+  void clear();
 
   // Adds the pass if there are no DWARF-related issues. There is an issue if
   // there is DWARF and if the pass does not support DWARF (as defined by the
@@ -280,9 +365,6 @@ struct PassRunner {
   // Run the passes on a specific function
   void runOnFunction(Function* func);
 
-  // Get the last pass that was already executed of a certain type.
-  template<class P> P* getLast();
-
   // When running a pass runner within another pass runner, this
   // flag should be set. This influences how pass debugging works,
   // and may influence other things in the future too.
@@ -304,6 +386,9 @@ struct PassRunner {
   // Returns whether a pass by that name will remove debug info.
   static bool passRemovesDebugInfo(const std::string& name);
 
+protected:
+  virtual void doAdd(std::unique_ptr<Pass> pass);
+
 private:
   // Whether this is a nested pass runner.
   bool isNested = false;
@@ -311,11 +396,6 @@ private:
   // Whether the passes we have added so far to be run (but not necessarily run
   // yet) have removed DWARF.
   bool addedPassesRemovedDWARF = false;
-
-  // Whether this pass runner has run. A pass runner should only be run once.
-  bool ran = false;
-
-  void doAdd(std::unique_ptr<Pass> pass);
 
   void runPass(Pass* pass);
   void runPassOnFunction(Pass* pass, Function* func);
@@ -335,18 +415,18 @@ private:
 // Core pass class
 //
 class Pass {
+  PassRunner* runner = nullptr;
+  friend PassRunner;
+
 public:
   virtual ~Pass() = default;
 
   // Implement this with code to run the pass on the whole module
-  virtual void run(PassRunner* runner, Module* module) {
-    WASM_UNREACHABLE("unimplemented");
-  }
+  virtual void run(Module* module) { WASM_UNREACHABLE("unimplemented"); }
 
   // Implement this with code to run the pass on a single function, for
   // a function-parallel pass
-  virtual void
-  runOnFunction(PassRunner* runner, Module* module, Function* function) {
+  virtual void runOnFunction(Module* module, Function* function) {
     WASM_UNREACHABLE("unimplemented");
   }
 
@@ -372,7 +452,7 @@ public:
   // This method is used to create instances per function for a
   // function-parallel pass. You may need to override this if you subclass a
   // Walker, as otherwise this will create the parent class.
-  virtual Pass* create() { WASM_UNREACHABLE("unimplenented"); }
+  virtual std::unique_ptr<Pass> create() { WASM_UNREACHABLE("unimplenented"); }
 
   // Whether this pass modifies the Binaryen IR in the module. This is true for
   // most passes, except for passes that have no side effects, or passes that
@@ -386,11 +466,51 @@ public:
   // for. This is used to issue a proper warning about that.
   virtual bool invalidatesDWARF() { return false; }
 
+  // Whether this pass modifies Binaryen IR in ways that may require fixups for
+  // non-nullable locals to validate according to the wasm spec. If the pass
+  // adds locals not in that form, or moves code around in ways that might break
+  // that validation, this must return true. In that case the pass runner will
+  // automatically run the necessary fixups afterwards.
+  //
+  // For more details see the LocalStructuralDominance class.
+  virtual bool requiresNonNullableLocalFixups() { return true; }
+
+  // Many passes can remove effects, for example, by finding some path is not
+  // reached and removing a throw or a call there. The few passes that *add*
+  // effects must mark themselves as such, so that we know to discard global
+  // effects after running them. For example, a logging pass that adds new calls
+  // to imports must override this to return true.
+  virtual bool addsEffects() { return false; }
+
+  void setPassArg(const std::string& value) { passArg = value; }
+
   std::string name;
 
+  PassRunner* getPassRunner() { return runner; }
+  void setPassRunner(PassRunner* runner_) {
+    assert((!runner || runner == runner_) && "Pass already had a runner");
+    runner = runner_;
+  }
+
+  PassOptions& getPassOptions() { return runner->options; }
+
 protected:
+  bool hasArgument(const std::string& key);
+  std::string getArgument(const std::string& key,
+                          const std::string& errorTextIfMissing);
+  std::string getArgumentOrDefault(const std::string& key,
+                                   const std::string& defaultValue);
+
+  // The main argument of the pass, which can be specified individually for
+  // every pass . getArgument() and friends will refer to this value if queried
+  // for a key that matches the pass name. All other arguments are taken from
+  // the runner / passOptions and therefore are global for all instances of a
+  // pass.
+  std::optional<std::string> passArg;
+
   Pass() = default;
-  Pass(Pass&) = default;
+  Pass(const Pass&) = default;
+  Pass(Pass&&) = default;
   Pass& operator=(const Pass&) = delete;
 };
 
@@ -400,47 +520,58 @@ protected:
 //
 template<typename WalkerType>
 class WalkerPass : public Pass, public WalkerType {
-  PassRunner* runner = nullptr;
 
 protected:
-  typedef WalkerPass<WalkerType> super;
+  using Super = WalkerPass<WalkerType>;
 
 public:
-  void run(PassRunner* runner, Module* module) override {
+  void run(Module* module) override {
+    assert(getPassRunner());
     // Parallel pass running is implemented in the PassRunner.
     if (isFunctionParallel()) {
-      PassRunner runner(module);
+      // Reduce opt/shrink levels to a maximum of one in nested runners like
+      // these, to balance runtime. We definitely want the full levels in the
+      // main passes we run, but nested pass runners are of secondary
+      // importance.
+      // TODO Investigate the impact of allowing the levels to just pass
+      //      through. That seems to cause at least some regression in compile
+      //      times in -O3, however, but with careful measurement we may find
+      //      the benefits are worth it. For now -O1 is a reasonable compromise
+      //      as it has basically linear runtime, unlike -O2 and -O3.
+      auto options = getPassOptions();
+      options.optimizeLevel = std::min(options.optimizeLevel, 1);
+      options.shrinkLevel = std::min(options.shrinkLevel, 1);
+      PassRunner runner(module, options);
       runner.setIsNested(true);
-      std::unique_ptr<Pass> copy;
-      copy.reset(create());
-      runner.add(std::move(copy));
+      runner.add(create());
       runner.run();
       return;
     }
     // Single-thread running just calls the walkModule traversal.
-    setPassRunner(runner);
-    WalkerType::setModule(module);
     WalkerType::walkModule(module);
   }
 
-  void
-  runOnFunction(PassRunner* runner, Module* module, Function* func) override {
+  // Utility for ad-hoc running.
+  void run(PassRunner* runner, Module* module) {
     setPassRunner(runner);
-    WalkerType::setModule(module);
-    WalkerType::walkFunction(func);
+    run(module);
+  }
+
+  void runOnFunction(Module* module, Function* func) override {
+    assert(getPassRunner());
+    WalkerType::walkFunctionInModule(func, module);
+  }
+
+  // Utility for ad-hoc running.
+  void runOnFunction(PassRunner* runner, Module* module, Function* func) {
+    setPassRunner(runner);
+    runOnFunction(module, func);
   }
 
   void runOnModuleCode(PassRunner* runner, Module* module) {
     setPassRunner(runner);
-    WalkerType::setModule(module);
     WalkerType::walkModuleCode(module);
   }
-
-  PassRunner* getPassRunner() { return runner; }
-
-  PassOptions& getPassOptions() { return runner->options; }
-
-  void setPassRunner(PassRunner* runner_) { runner = runner_; }
 };
 
 } // namespace wasm

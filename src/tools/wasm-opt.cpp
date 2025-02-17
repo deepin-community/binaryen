@@ -23,7 +23,6 @@
 
 #include "execution-results.h"
 #include "fuzzing.h"
-#include "js-wrapper.h"
 #include "optimization-options.h"
 #include "pass.h"
 #include "shell-interface.h"
@@ -31,10 +30,11 @@
 #include "support/command-line.h"
 #include "support/debug.h"
 #include "support/file.h"
+#include "support/path.h"
 #include "wasm-binary.h"
 #include "wasm-interpreter.h"
 #include "wasm-io.h"
-#include "wasm-s-parser.h"
+#include "wasm-stack.h"
 #include "wasm-validator.h"
 #include "wasm2c-wrapper.h"
 
@@ -59,9 +59,10 @@ static std::string runCommand(std::string command) {
 #endif
 }
 
-static bool willRemoveDebugInfo(const std::vector<std::string>& passes) {
+static bool
+willRemoveDebugInfo(const std::vector<OptimizationOptions::PassInfo>& passes) {
   for (auto& pass : passes) {
-    if (PassRunner::passRemovesDebugInfo(pass)) {
+    if (PassRunner::passRemovesDebugInfo(pass.name)) {
       return true;
     }
   }
@@ -84,12 +85,12 @@ int main(int argc, const char* argv[]) {
   bool fuzzPasses = false;
   bool fuzzMemory = true;
   bool fuzzOOB = true;
-  std::string emitJSWrapper;
   std::string emitSpecWrapper;
   std::string emitWasm2CWrapper;
   std::string inputSourceMapFilename;
   std::string outputSourceMapFilename;
   std::string outputSourceMapUrl;
+  bool emitExnref = false;
 
   const std::string WasmOptOption = "wasm-opt options";
 
@@ -177,15 +178,6 @@ int main(int argc, const char* argv[]) {
          WasmOptOption,
          Options::Arguments::Zero,
          [&](Options* o, const std::string& arguments) { fuzzOOB = false; })
-    .add("--emit-js-wrapper",
-         "-ejw",
-         "Emit a JavaScript wrapper file that can run the wasm with some test "
-         "values, useful for fuzzing",
-         WasmOptOption,
-         Options::Arguments::One,
-         [&](Options* o, const std::string& arguments) {
-           emitJSWrapper = arguments;
-         })
     .add("--emit-spec-wrapper",
          "-esw",
          "Emit a wasm spec interpreter wrapper file that can run the wasm with "
@@ -232,11 +224,26 @@ int main(int argc, const char* argv[]) {
                     Options::Arguments::One,
                     [](Options* o, const std::string& argument) {
                       o->extra["infile"] = argument;
-                    });
+                    })
+    .add("--experimental-new-eh",
+         "",
+         "Deprecated; same as --emit-exnref",
+         WasmOptOption,
+         Options::Arguments::Zero,
+         [&emitExnref](Options*, const std::string&) { emitExnref = true; })
+    .add("--emit-exnref",
+         "",
+         "After running all requested transformations / optimizations, "
+         "translate the instruction to use the new EH instructions at the end. "
+         "Depending on the optimization level specified, this may do some more "
+         "post-translation optimizations.",
+         WasmOptOption,
+         Options::Arguments::Zero,
+         [&emitExnref](Options*, const std::string&) { emitExnref = true; });
   options.parse(argc, argv);
 
   Module wasm;
-  options.applyFeatures(wasm);
+  options.applyOptionsBeforeParse(wasm);
 
   BYN_TRACE("reading...\n");
 
@@ -244,8 +251,11 @@ int main(int argc, const char* argv[]) {
     // If the user asked to print the module, print it even if invalid,
     // as otherwise there is no way to print the broken module (the pass
     // to print would not be reached).
-    if (std::find(options.passes.begin(), options.passes.end(), "print") !=
-        options.passes.end()) {
+    if (std::any_of(options.passes.begin(),
+                    options.passes.end(),
+                    [](const OptimizationOptions::PassInfo& info) {
+                      return info.name == "print";
+                    })) {
       std::cout << wasm << '\n';
     }
     Fatal() << message;
@@ -269,7 +279,12 @@ int main(int argc, const char* argv[]) {
     } catch (ParseException& p) {
       p.dump(std::cerr);
       std::cerr << '\n';
-      Fatal() << "error parsing wasm";
+      if (options.debug) {
+        Fatal() << "error parsing wasm. here is what we read up to the error:\n"
+                << wasm;
+      } else {
+        Fatal() << "error parsing wasm (try --debug for more info)";
+      }
     } catch (MapParseException& p) {
       p.dump(std::cerr);
       std::cerr << '\n';
@@ -279,8 +294,10 @@ int main(int argc, const char* argv[]) {
                  "request for silly amounts of memory)";
     }
 
+    options.applyOptionsAfterParse(wasm);
+
     if (options.passOptions.validate) {
-      if (!WasmValidator().validate(wasm)) {
+      if (!WasmValidator().validate(wasm, options.passOptions)) {
         exitOnInvalidWasm("error validating input");
       }
     }
@@ -294,40 +311,27 @@ int main(int argc, const char* argv[]) {
     reader.setAllowOOB(fuzzOOB);
     reader.build();
     if (options.passOptions.validate) {
-      if (!WasmValidator().validate(wasm)) {
+      if (!WasmValidator().validate(wasm, options.passOptions)) {
         std::cout << wasm << '\n';
         Fatal() << "error after translate-to-fuzz";
       }
     }
   }
 
-  if (emitJSWrapper.size() > 0) {
-    // As the code will run in JS, we must legalize it.
-    PassRunner runner(&wasm);
-    runner.add("legalize-js-interface");
-    runner.run();
-  }
-
-  ExecutionResults results(options.passOptions);
+  ExecutionResults results;
   if (fuzzExecBefore) {
     results.get(wasm);
   }
 
-  if (emitJSWrapper.size() > 0) {
-    std::ofstream outfile;
-    outfile.open(emitJSWrapper, std::ofstream::out);
-    outfile << generateJSWrapper(wasm);
-    outfile.close();
-  }
   if (emitSpecWrapper.size() > 0) {
     std::ofstream outfile;
-    outfile.open(emitSpecWrapper, std::ofstream::out);
+    outfile.open(wasm::Path::to_path(emitSpecWrapper), std::ofstream::out);
     outfile << generateSpecWrapper(wasm);
     outfile.close();
   }
   if (emitWasm2CWrapper.size() > 0) {
     std::ofstream outfile;
-    outfile.open(emitWasm2CWrapper, std::ofstream::out);
+    outfile.open(wasm::Path::to_path(emitWasm2CWrapper), std::ofstream::out);
     outfile << generateWasm2CWrapper(wasm);
     outfile.close();
   }
@@ -336,7 +340,7 @@ int main(int argc, const char* argv[]) {
 
   if (extraFuzzCommand.size() > 0 && options.extra.count("output") > 0) {
     BYN_TRACE("writing binary before opts, for extra fuzz command...\n");
-    ModuleWriter writer;
+    ModuleWriter writer(options.passOptions);
     writer.setBinary(emitBinary);
     writer.setDebugInfo(options.passOptions.debugInfo);
     writer.write(wasm, options.extra["output"]);
@@ -344,8 +348,10 @@ int main(int argc, const char* argv[]) {
     std::cout << "[extra-fuzz-command first output:]\n" << firstOutput << '\n';
   }
 
+  bool translateToExnref = wasm.features.hasExceptionHandling() && emitExnref;
+
   if (!options.runningPasses()) {
-    if (!options.quiet) {
+    if (!options.quiet && !translateToExnref) {
       std::cerr << "warning: no passes specified, not doing any work\n";
     }
   } else {
@@ -353,7 +359,7 @@ int main(int argc, const char* argv[]) {
     auto runPasses = [&]() {
       options.runPasses(wasm);
       if (options.passOptions.validate) {
-        bool valid = WasmValidator().validate(wasm);
+        bool valid = WasmValidator().validate(wasm, options.passOptions);
         if (!valid) {
           exitOnInvalidWasm("error after opts");
         }
@@ -365,7 +371,7 @@ int main(int argc, const char* argv[]) {
       // size no longer decreasing.
       auto getSize = [&]() {
         BufferWithRandomAccess buffer;
-        WasmBinaryWriter writer(&wasm, buffer);
+        WasmBinaryWriter writer(&wasm, buffer, options.passOptions);
         writer.write();
         return buffer.size();
       };
@@ -382,8 +388,25 @@ int main(int argc, const char* argv[]) {
     }
   }
 
+  if (translateToExnref) {
+    BYN_TRACE("translating to new EH instructions...\n");
+    PassRunner runner(&wasm, options.passOptions);
+    runner.add("translate-to-exnref");
+    runner.run();
+    if (options.passOptions.validate) {
+      bool valid = WasmValidator().validate(wasm, options.passOptions);
+      if (!valid) {
+        exitOnInvalidWasm("error after opts");
+      }
+    }
+  }
+
   if (fuzzExecAfter) {
     results.check(wasm);
+  }
+
+  if (options.passOptions.printStackIR) {
+    printStackIR(std::cout, &wasm, options.passOptions);
   }
 
   if (options.extra.count("output") == 0) {
@@ -394,7 +417,7 @@ int main(int argc, const char* argv[]) {
   }
 
   BYN_TRACE("writing...\n");
-  ModuleWriter writer;
+  ModuleWriter writer(options.passOptions);
   writer.setBinary(emitBinary);
   writer.setDebugInfo(options.passOptions.debugInfo);
   if (outputSourceMapFilename.size()) {

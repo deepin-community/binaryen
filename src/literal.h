@@ -32,41 +32,34 @@ namespace wasm {
 
 class Literals;
 struct GCData;
-struct RttSupers;
+struct ExnData;
 
 class Literal {
   // store only integers, whose bits are deterministic. floats
   // can have their signalling bit set, for example.
   union {
+    // Note: i31 is stored in the |i32| field, with the lower 31 bits containing
+    // the value if there is one, and the highest bit containing whether there
+    // is a value. Thus, a null is |i32 === 0|.
     int32_t i32;
     int64_t i64;
     uint8_t v128[16];
     // funcref function name. `isNull()` indicates a `null` value.
+    // TODO: handle cross-module calls using something other than a Name here.
     Name func;
-    // A reference to GC data, either a Struct or an Array. For both of those
-    // we store the referred data as a Literals object (which is natural for an
+    // A reference to GC data, either a Struct or an Array. For both of those we
+    // store the referred data as a Literals object (which is natural for an
     // Array, and for a Struct, is just the fields in order). The type is used
-    // to indicate whether this is a Struct or an Array, and of what type.
+    // to indicate whether this is a Struct or an Array, and of what type. We
+    // also use this to store String data, as it is similarly stored on the
+    // heap. For externrefs, the gcData is the same as for the corresponding
+    // internal references and the values are only differentiated by the type.
+    // Externalized i31 references have a gcData containing the internal i31
+    // reference as its sole value even though internal i31 references do not
+    // have a gcData.
     std::shared_ptr<GCData> gcData;
-    // RTT values are "structural" in that the MVP doc says that multiple
-    // invocations of ref.canon return things that are observably identical, and
-    // the same is true for ref.sub. That is, what matters is the types; there
-    // is no unique identifier created in each ref.canon/sub. To track the
-    // types, we maintain a simple vector of the supertypes. Thus, an rtt.canon
-    // of type A will have an empty vector; an rtt.sub of type B of that initial
-    // canon would have a vector of size 1 containing A; a subsequent rtt.sub
-    // would have A, B, and so forth.
-    // (This encoding is very inefficient and not at all what a production VM
-    // would do, but it is simple.)
-    // The unique_ptr here is to avoid increasing the size of the union as well
-    // as the Literal class itself.
-    // To support the experimental RttFreshSub instruction, we not only store
-    // the type, but also a reference to an allocation.
-    std::unique_ptr<RttSupers> rttSupers;
-    // TODO: Literals of type `anyref` can only be `null` currently but we
-    // will need to represent external values eventually, to
-    // 1) run the spec tests and fuzzer with reference types enabled and
-    // 2) avoid bailing out when seeing a reference typed value in precompute
+    // A reference to Exn data.
+    std::shared_ptr<ExnData> exnData;
   };
 
 public:
@@ -91,9 +84,13 @@ public:
   explicit Literal(const std::array<Literal, 8>&);
   explicit Literal(const std::array<Literal, 4>&);
   explicit Literal(const std::array<Literal, 2>&);
-  explicit Literal(Name func, Type type) : func(func), type(type) {}
-  explicit Literal(std::shared_ptr<GCData> gcData, Type type);
-  explicit Literal(std::unique_ptr<RttSupers>&& rttSupers, Type type);
+  explicit Literal(Name func, HeapType type)
+    : func(func), type(type, NonNullable) {
+    assert(type.isSignature());
+  }
+  explicit Literal(std::shared_ptr<GCData> gcData, HeapType type);
+  explicit Literal(std::shared_ptr<ExnData> exnData);
+  explicit Literal(std::string_view string);
   Literal(const Literal& other);
   Literal& operator=(const Literal& other);
   ~Literal();
@@ -101,20 +98,14 @@ public:
   bool isConcrete() const { return type.isConcrete(); }
   bool isNone() const { return type == Type::none; }
   bool isFunction() const { return type.isFunction(); }
+  // Whether this is GC data, that is, something stored on the heap (aside from
+  // a null or i31). This includes structs, arrays, and also strings.
   bool isData() const { return type.isData(); }
+  bool isExn() const { return type.isExn(); }
+  bool isString() const { return type.isString(); }
 
-  bool isNull() const {
-    if (type.isNullable()) {
-      if (type.isFunction()) {
-        return func.isNull();
-      }
-      if (isData()) {
-        return !gcData;
-      }
-      return true;
-    }
-    return false;
-  }
+  bool isNull() const { return type.isNull(); }
+
   bool isZero() const {
     switch (type.getBasic()) {
       case Type::i32:
@@ -218,6 +209,9 @@ public:
         WASM_UNREACHABLE("unexpected type");
     }
   }
+
+  static Literal makeFromMemory(void* p, Type type);
+
   static Literal makeSignedMin(Type type) {
     switch (type.getBasic()) {
       case Type::i32:
@@ -248,22 +242,39 @@ public:
         WASM_UNREACHABLE("unexpected type");
     }
   }
-  static Literal makeNull(Type type) {
-    assert(type.isNullable());
-    return Literal(type);
+  static Literal makeNull(HeapType type) {
+    return Literal(Type(type.getBottom(), Nullable));
   }
-  static Literal makeFunc(Name func, Type type = Type::funcref) {
+  static Literal makeFunc(Name func, HeapType type) {
     return Literal(func, type);
   }
-  static Literal makeI31(int32_t value) {
-    auto lit = Literal(Type::i31ref);
-    lit.i32 = value & 0x7fffffff;
+  static Literal makeI31(int32_t value, Shareability share) {
+    auto lit = Literal(Type(HeapTypes::i31.getBasic(share), NonNullable));
+    lit.i32 = value | 0x80000000;
     return lit;
   }
-
-  // Get the canonical RTT value for a given HeapType. For nominal types, the
-  // canonical RTT reflects the static supertype chain.
-  static Literal makeCanonicalRtt(HeapType type);
+  // Wasm has nondeterministic rules for NaN propagation in some operations. For
+  // example. f32.neg is deterministic and just flips the sign, even of a NaN,
+  // but f32.add is nondeterministic, and if one or more of the inputs is a NaN,
+  // then
+  //
+  //  * if all NaNs are canonical, the output is some arbitrary canonical NaN
+  //  * otherwise the output is some arbitrary arithmetic NaN
+  //
+  // (canonical = NaN payload is 1000..000; arithmetic: 1???..???, that is, the
+  // high bit is 1 and all others can be 0 or 1)
+  //
+  // For many things we don't need to care, and can just do a normal C++ add for
+  // an f32.add, for example - the wasm rules are specified so that things like
+  // that just work (in order for such math to be fast). However, for our
+  // optimizer, it is useful to "standardize" NaNs when there is nondeterminism.
+  // That is, when there are multiple valid outputs, it's nice to emit the same
+  // one consistently, so that it doesn't look like the optimization changed
+  // something. In other words, if the valid output of an expression is a set of
+  // valid NaNs, and after optimization the output is still that same set, then
+  // the optimization is valid. And if the interpreter picks the same NaN in
+  // both cases from that identical set then nothing looks wrong to the fuzzer.
+  static Literal standardizeNaN(const Literal& input);
 
   Literal castToF32();
   Literal castToF64();
@@ -275,8 +286,9 @@ public:
     return i32;
   }
   int32_t geti31(bool signed_ = true) const {
-    assert(type.getHeapType() == HeapType::i31);
-    return signed_ ? (i32 << 1) >> 1 : i32;
+    assert(type.getHeapType().isMaybeShared(HeapType::i31));
+    // Cast to unsigned for the left shift to avoid undefined behavior.
+    return signed_ ? int32_t((uint32_t(i32) << 1)) >> 1 : (i32 & 0x7fffffff);
   }
   int64_t geti64() const {
     assert(type == Type::i64);
@@ -296,7 +308,7 @@ public:
     return func;
   }
   std::shared_ptr<GCData> getGCData() const;
-  const RttSupers& getRttSupers() const;
+  std::shared_ptr<ExnData> getExnData() const;
 
   // careful!
   int32_t* geti32Ptr() {
@@ -341,6 +353,8 @@ public:
   bool operator!=(const Literal& other) const;
 
   bool isNaN();
+  bool isCanonicalNaN();
+  bool isArithmeticNaN();
 
   static uint32_t NaNPayload(float f);
   static uint64_t NaNPayload(double f);
@@ -363,13 +377,18 @@ public:
   Literal extendS32() const;
   Literal wrapToI32() const;
 
+  Literal convertSIToF16() const;
+  Literal convertUIToF16() const;
   Literal convertSIToF32() const;
   Literal convertUIToF32() const;
   Literal convertSIToF64() const;
   Literal convertUIToF64() const;
+  Literal convertF32ToF16() const;
 
+  Literal truncSatToSI16() const;
   Literal truncSatToSI32() const;
   Literal truncSatToSI64() const;
+  Literal truncSatToUI16() const;
   Literal truncSatToUI32() const;
   Literal truncSatToUI64() const;
 
@@ -427,8 +446,8 @@ public:
 
   // Fused multiply add and subtract.
   // Computes this + (left * right) to infinite precision then round once.
-  Literal fma(const Literal& left, const Literal& right) const;
-  Literal fms(const Literal& left, const Literal& right) const;
+  Literal madd(const Literal& left, const Literal& right) const;
+  Literal nmadd(const Literal& left, const Literal& right) const;
 
   std::array<Literal, 16> getLanesSI8x16() const;
   std::array<Literal, 16> getLanesUI8x16() const;
@@ -436,6 +455,7 @@ public:
   std::array<Literal, 8> getLanesUI16x8() const;
   std::array<Literal, 4> getLanesI32x4() const;
   std::array<Literal, 2> getLanesI64x2() const;
+  std::array<Literal, 8> getLanesF16x8() const;
   std::array<Literal, 4> getLanesF32x4() const;
   std::array<Literal, 2> getLanesF64x2() const;
 
@@ -455,6 +475,9 @@ public:
   Literal splatI64x2() const;
   Literal extractLaneI64x2(uint8_t index) const;
   Literal replaceLaneI64x2(const Literal& other, uint8_t index) const;
+  Literal splatF16x8() const;
+  Literal extractLaneF16x8(uint8_t index) const;
+  Literal replaceLaneF16x8(const Literal& other, uint8_t index) const;
   Literal splatF32x4() const;
   Literal extractLaneF32x4(uint8_t index) const;
   Literal replaceLaneF32x4(const Literal& other, uint8_t index) const;
@@ -497,6 +520,12 @@ public:
   Literal gtSI64x2(const Literal& other) const;
   Literal leSI64x2(const Literal& other) const;
   Literal geSI64x2(const Literal& other) const;
+  Literal eqF16x8(const Literal& other) const;
+  Literal neF16x8(const Literal& other) const;
+  Literal ltF16x8(const Literal& other) const;
+  Literal gtF16x8(const Literal& other) const;
+  Literal leF16x8(const Literal& other) const;
+  Literal geF16x8(const Literal& other) const;
   Literal eqF32x4(const Literal& other) const;
   Literal neF32x4(const Literal& other) const;
   Literal ltF32x4(const Literal& other) const;
@@ -593,6 +622,21 @@ public:
   Literal extMulHighSI64x2(const Literal& other) const;
   Literal extMulLowUI64x2(const Literal& other) const;
   Literal extMulHighUI64x2(const Literal& other) const;
+  Literal absF16x8() const;
+  Literal negF16x8() const;
+  Literal sqrtF16x8() const;
+  Literal addF16x8(const Literal& other) const;
+  Literal subF16x8(const Literal& other) const;
+  Literal mulF16x8(const Literal& other) const;
+  Literal divF16x8(const Literal& other) const;
+  Literal minF16x8(const Literal& other) const;
+  Literal maxF16x8(const Literal& other) const;
+  Literal pminF16x8(const Literal& other) const;
+  Literal pmaxF16x8(const Literal& other) const;
+  Literal ceilF16x8() const;
+  Literal floorF16x8() const;
+  Literal truncF16x8() const;
+  Literal nearestF16x8() const;
   Literal absF32x4() const;
   Literal negF32x4() const;
   Literal sqrtF32x4() const;
@@ -653,16 +697,20 @@ public:
   Literal truncSatZeroUToI32x4() const;
   Literal demoteZeroToF32x4() const;
   Literal promoteLowToF64x2() const;
+  Literal truncSatToSI16x8() const;
+  Literal truncSatToUI16x8() const;
+  Literal convertSToF16x8() const;
+  Literal convertUToF16x8() const;
   Literal swizzleI8x16(const Literal& other) const;
-  Literal relaxedFmaF32x4(const Literal& left, const Literal& right) const;
-  Literal relaxedFmsF32x4(const Literal& left, const Literal& right) const;
-  Literal relaxedFmaF64x2(const Literal& left, const Literal& right) const;
-  Literal relaxedFmsF64x2(const Literal& left, const Literal& right) const;
+  Literal relaxedMaddF16x8(const Literal& left, const Literal& right) const;
+  Literal relaxedNmaddF16x8(const Literal& left, const Literal& right) const;
+  Literal relaxedMaddF32x4(const Literal& left, const Literal& right) const;
+  Literal relaxedNmaddF32x4(const Literal& left, const Literal& right) const;
+  Literal relaxedMaddF64x2(const Literal& left, const Literal& right) const;
+  Literal relaxedNmaddF64x2(const Literal& left, const Literal& right) const;
 
-  // Checks if an RTT value is a sub-rtt of another, that is, whether GC data
-  // with this object's RTT can be successfuly cast using the other RTT
-  // according to the wasm rules for that.
-  bool isSubRtt(const Literal& other) const;
+  Literal externalize() const;
+  Literal internalize() const;
 
 private:
   Literal addSatSI8(const Literal& other) const;
@@ -694,7 +742,7 @@ public:
   }
   Literals(size_t initialSize) : SmallVector(initialSize) {}
 
-  Type getType() {
+  Type getType() const {
     if (empty()) {
       return Type::none;
     }
@@ -707,67 +755,44 @@ public:
     }
     return Type(types);
   }
-  bool isNone() { return size() == 0; }
-  bool isConcrete() { return size() != 0; }
+  bool isNone() const { return size() == 0; }
+  bool isConcrete() const { return size() != 0; }
 };
 
 std::ostream& operator<<(std::ostream& o, wasm::Literal literal);
 std::ostream& operator<<(std::ostream& o, wasm::Literals literals);
 
-// A GC Struct or Array is a set of values with a run-time type saying what it
-// is. In the case of static (rtt-free) typing, the rtt is not present and
-// instead we have a static type.
+// A GC Struct, Array, or String is a set of values with a type saying how it
+// should be interpreted.
 struct GCData {
-  // The runtime type info for this struct or array.
-  Literal rtt;
+  // The type of this struct, array, or string.
+  HeapType type;
 
   // The element or field values.
   Literals values;
 
-  GCData(Literal rtt, Literals values) : rtt(rtt), values(values) {}
+  GCData(HeapType type, Literals&& values)
+    : type(type), values(std::move(values)) {}
 };
 
-struct RttSuper {
-  // The type of the super.
-  HeapType type;
-  // A shared allocation, used to implement rtt.fresh_sub. This is null for a
-  // normal sub, and for a fresh one we allocate a value here, which can then be
-  // used to differentiate rtts. (The allocation is shared so that when copying
-  // an rtt we remain equal.)
-  // TODO: Remove or optimize this when the spec stabilizes.
-  std::shared_ptr<size_t> freshPtr;
+// The data of a (ref exn) literal.
+struct ExnData {
+  // The tag of this exn data.
+  // TODO: handle cross-module calls using something other than a Name here.
+  Name tag;
 
-  RttSuper(HeapType type) : type(type) {}
+  // The payload of this exn data.
+  Literals payload;
 
-  void makeFresh() { freshPtr = std::make_shared<size_t>(); }
-
-  bool operator==(const RttSuper& other) const {
-    return type == other.type && freshPtr == other.freshPtr;
-  }
-  bool operator!=(const RttSuper& other) const { return !(*this == other); }
+  ExnData(Name tag, Literals payload) : tag(tag), payload(payload) {}
 };
-
-struct RttSupers : std::vector<RttSuper> {};
 
 } // namespace wasm
 
 namespace std {
 template<> struct hash<wasm::Literal> {
   size_t operator()(const wasm::Literal& a) const {
-    auto digest = wasm::hash(a.type.getID());
-    auto hashRef = [&]() {
-      assert(a.type.isRef());
-      if (a.isNull()) {
-        return digest;
-      }
-      if (a.type.isFunction()) {
-        wasm::rehash(digest, a.getFunc());
-        return digest;
-      }
-      // other non-null reference type literals cannot represent concrete
-      // values, i.e. there is no concrete anyref or eqref other than null.
-      WASM_UNREACHABLE("unexpected type");
-    };
+    auto digest = wasm::hash(a.type);
     if (a.type.isBasic()) {
       switch (a.type.getBasic()) {
         case wasm::Type::i32:
@@ -788,28 +813,33 @@ template<> struct hash<wasm::Literal> {
           wasm::rehash(digest, chunks[0]);
           wasm::rehash(digest, chunks[1]);
           return digest;
-        case wasm::Type::funcref:
-        case wasm::Type::anyref:
-        case wasm::Type::eqref:
-        case wasm::Type::dataref:
-          return hashRef();
-        case wasm::Type::i31ref:
-          wasm::rehash(digest, a.geti31(true));
-          return digest;
         case wasm::Type::none:
         case wasm::Type::unreachable:
           break;
       }
     } else if (a.type.isRef()) {
-      return hashRef();
-    } else if (a.type.isRtt()) {
-      const auto& supers = a.getRttSupers();
-      wasm::rehash(digest, supers.size());
-      for (auto super : supers) {
-        wasm::rehash(digest, super.type.getID());
-        wasm::rehash(digest, uintptr_t(super.freshPtr.get()));
+      if (a.isNull()) {
+        return digest;
       }
-      return digest;
+      if (a.type.isFunction()) {
+        wasm::rehash(digest, a.getFunc());
+        return digest;
+      }
+      if (a.type.getHeapType().isMaybeShared(wasm::HeapType::i31)) {
+        wasm::rehash(digest, a.geti31(true));
+        return digest;
+      }
+      if (a.type.isString()) {
+        auto& values = a.getGCData()->values;
+        wasm::rehash(digest, values.size());
+        for (auto c : values) {
+          wasm::rehash(digest, c.getInteger());
+        }
+        return digest;
+      }
+      // other non-null reference type literals cannot represent concrete
+      // values, i.e. there is no concrete anyref or eqref other than null.
+      WASM_UNREACHABLE("unexpected type");
     }
     WASM_UNREACHABLE("unexpected type");
   }

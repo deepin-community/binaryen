@@ -67,8 +67,11 @@ struct EnforceStackLimits : public WalkerPass<PostWalker<EnforceStackLimits>> {
 
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override {
-    return new EnforceStackLimits(
+  // Only affects linear memory operations.
+  bool requiresNonNullableLocalFixups() override { return false; }
+
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<EnforceStackLimits>(
       stackPointer, stackBase, stackLimit, builder, handler);
   }
 
@@ -123,7 +126,10 @@ private:
 };
 
 struct StackCheck : public Pass {
-  void run(PassRunner* runner, Module* module) override {
+  // Adds calls to new imports.
+  bool addsEffects() override { return true; }
+
+  void run(Module* module) override {
     Global* stackPointer = getStackPointerGlobal(*module);
     if (!stackPointer) {
       BYN_DEBUG(std::cerr << "no stack pointer found\n");
@@ -135,8 +141,7 @@ struct StackCheck : public Pass {
     auto stackLimitName = Names::getValidGlobalName(*module, "__stack_limit");
 
     Name handler;
-    auto handlerName =
-      runner->options.getArgumentOrDefault("stack-check-handler", "");
+    auto handlerName = getArgumentOrDefault("stack-check-handler", "");
     if (handlerName != "") {
       handler = handlerName;
       importStackOverflowHandler(
@@ -146,21 +151,22 @@ struct StackCheck : public Pass {
     Builder builder(*module);
 
     // Add the globals.
+    Type indexType =
+      module->memories.empty() ? Type::i32 : module->memories[0]->indexType;
     auto stackBase =
       module->addGlobal(builder.makeGlobal(stackBaseName,
                                            stackPointer->type,
-                                           builder.makeConstPtr(0),
+                                           builder.makeConstPtr(0, indexType),
                                            Builder::Mutable));
     auto stackLimit =
       module->addGlobal(builder.makeGlobal(stackLimitName,
                                            stackPointer->type,
-                                           builder.makeConstPtr(0),
+                                           builder.makeConstPtr(0, indexType),
                                            Builder::Mutable));
 
     // Instrument all the code.
-    PassRunner innerRunner(module);
     EnforceStackLimits(stackPointer, stackBase, stackLimit, builder, handler)
-      .run(&innerRunner, module);
+      .run(getPassRunner(), module);
 
     // Generate the exported function.
     auto limitsFunc = builder.makeFunction(

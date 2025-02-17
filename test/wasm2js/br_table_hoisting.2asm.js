@@ -1,5 +1,5 @@
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -10,15 +10,12 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  function zed($0) {
   $0 = $0 | 0;
   zed($0 | 0);
  }
  
- function $1(x) {
+ function foo1(x) {
   x = x | 0;
   a : {
    b : {
@@ -47,7 +44,7 @@ function asmFunc(env) {
   zed(-10 | 0);
  }
  
- function $2(x) {
+ function foo2(x) {
   x = x | 0;
   a : {
    b : {
@@ -84,7 +81,7 @@ function asmFunc(env) {
   zed(-10 | 0);
  }
  
- function $3(x) {
+ function foo3(x) {
   x = x | 0;
   a : {
    b : {
@@ -124,7 +121,7 @@ function asmFunc(env) {
   zed(-10 | 0);
  }
  
- function $4(x) {
+ function foo4(x) {
   x = x | 0;
   a : {
    b : {
@@ -170,15 +167,15 @@ function asmFunc(env) {
  }
  
  return {
-  "foo1": $1, 
-  "foo2": $2, 
-  "foo3": $3, 
-  "foo4": $4
+  "foo1": foo1, 
+  "foo2": foo2, 
+  "foo3": foo3, 
+  "foo4": foo4
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var foo1 = retasmFunc.foo1;
 export var foo2 = retasmFunc.foo2;
 export var foo3 = retasmFunc.foo3;

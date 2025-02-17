@@ -59,6 +59,7 @@
 
 #include "ir/branch-utils.h"
 #include "ir/effects.h"
+#include "ir/eh-utils.h"
 #include "ir/find_all.h"
 #include "ir/label-utils.h"
 #include "ir/utils.h"
@@ -86,7 +87,9 @@ struct ExpressionMarker
 struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
   bool isFunctionParallel() override { return true; }
 
-  Pass* create() override { return new CodeFolding; }
+  std::unique_ptr<Pass> create() override {
+    return std::make_unique<CodeFolding>();
+  }
 
   // information about a "tail" - code that reaches a point that we can
   // merge (e.g., a branch and some code leading up to it)
@@ -117,7 +120,11 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
 
   // state
 
+  // Set when we optimized and believe another pass is warranted.
   bool anotherPass;
+  // Set when we optimized in a manner that requires EH fixups specifically,
+  // which is generally the case when we wrap things in a block.
+  bool needEHFixups;
 
   // pass state
 
@@ -165,7 +172,7 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
     }
   }
 
-  void visitReturn(Return* curr) {
+  void handleReturn(Expression* curr) {
     if (!controlFlowStack.empty()) {
       // we can easily optimize if we are at the end of the parent block
       Block* parent = controlFlowStack.back()->dynCast<Block>();
@@ -177,6 +184,26 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
     // otherwise, if we have a large value, it might be worth optimizing us as
     // well
     returnTails.push_back(Tail(curr, getCurrentPointer()));
+  }
+
+  void visitReturn(Return* curr) { handleReturn(curr); }
+
+  void visitCall(Call* curr) {
+    if (curr->isReturn) {
+      handleReturn(curr);
+    }
+  }
+
+  void visitCallIndirect(CallIndirect* curr) {
+    if (curr->isReturn) {
+      handleReturn(curr);
+    }
+  }
+
+  void visitCallRef(CallRef* curr) {
+    if (curr->isReturn) {
+      handleReturn(curr);
+    }
   }
 
   void visitBlock(Block* curr) {
@@ -227,6 +254,7 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
       // we must ensure we present the same type as the if had
       ret->finalize(curr->type);
       replaceCurrent(ret);
+      needEHFixups = true;
     } else {
       // if both are blocks, look for a tail we can merge
       auto* left = curr->ifTrue->dynCast<Block>();
@@ -264,7 +292,8 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
     anotherPass = true;
     while (anotherPass) {
       anotherPass = false;
-      super::doWalkFunction(func);
+      needEHFixups = false;
+      Super::doWalkFunction(func);
       optimizeTerminatingTails(unreachableTails);
       // optimize returns at the end, so we can benefit from a fallthrough if
       // there is a value TODO: separate passes for them?
@@ -277,6 +306,9 @@ struct CodeFolding : public WalkerPass<ControlFlowWalker<CodeFolding>> {
       returnTails.clear();
       unoptimizables.clear();
       modifieds.clear();
+      if (needEHFixups) {
+        EHUtils::handleBlockNestedPops(func, *getModule());
+      }
       // if we did any work, types may need to be propagated
       if (anotherPass) {
         ReFinalize().walkFunctionInModule(func, getModule());
@@ -311,15 +343,18 @@ private:
         if (effects.danglingPop) {
           return false;
         }
-        // When an expression can throw and it is within a try scope, taking it
-        // out of the try scope changes the program's behavior, because the
-        // expression that would otherwise have been caught by the try now
-        // throws up to the next try scope or even up to the caller. We restrict
-        // the move if 'outOf' contains a 'try' anywhere in it. This is a
-        // conservative approximation because there can be cases that 'try' is
-        // within the expression that may throw so it is safe to take the
-        // expression out.
-        if (effects.throws() && !FindAll<Try>(outOf).list.empty()) {
+        // When an expression can throw and it is within a try/try_table scope,
+        // taking it out of the try/try_table scope changes the program's
+        // behavior, because the expression that would otherwise have been
+        // caught by the try/try_table now throws up to the next try/try_table
+        // scope or even up to the caller. We restrict the move if 'outOf'
+        // contains a 'try' or 'try_table' anywhere in it. This is a
+        // conservative approximation because there can be cases that
+        // 'try'/'try_table' is within the expression that may throw so it is
+        // safe to take the expression out.
+        // TODO: optimize this check to avoid two FindAlls.
+        if (effects.throws() &&
+            (FindAll<Try>(outOf).has() || FindAll<TryTable>(outOf).has())) {
           return false;
         }
       }
@@ -486,6 +521,7 @@ private:
     // ensure the replacement has the same type, so the outside is not surprised
     block->finalize(oldType);
     replaceCurrent(block);
+    needEHFixups = true;
   }
 
   // optimize tails that terminate control flow in this function, so we
@@ -743,6 +779,7 @@ private:
     // ensure the replacement has the same type, so the outside is not surprised
     outer->finalize(getFunction()->getResults());
     getFunction()->body = outer;
+    needEHFixups = true;
     return true;
   }
 

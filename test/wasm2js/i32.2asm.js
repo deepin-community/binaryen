@@ -1,5 +1,5 @@
 
-function asmFunc(env) {
+function asmFunc(imports) {
  var Math_imul = Math.imul;
  var Math_fround = Math.fround;
  var Math_abs = Math.abs;
@@ -10,9 +10,6 @@ function asmFunc(env) {
  var Math_ceil = Math.ceil;
  var Math_trunc = Math.trunc;
  var Math_sqrt = Math.sqrt;
- var abort = env.abort;
- var nan = NaN;
- var infinity = Infinity;
  function $0(x, y) {
   x = x | 0;
   y = y | 0;
@@ -120,64 +117,74 @@ function asmFunc(env) {
  
  function $18(x) {
   x = x | 0;
+  return x << 24 >> 24 | 0;
+ }
+ 
+ function $19(x) {
+  x = x | 0;
+  return x << 16 >> 16 | 0;
+ }
+ 
+ function $20(x) {
+  x = x | 0;
   return !x | 0;
- }
- 
- function $19(x, y) {
-  x = x | 0;
-  y = y | 0;
-  return (x | 0) == (y | 0) | 0;
- }
- 
- function $20(x, y) {
-  x = x | 0;
-  y = y | 0;
-  return (x | 0) != (y | 0) | 0;
  }
  
  function $21(x, y) {
   x = x | 0;
   y = y | 0;
-  return (x | 0) < (y | 0) | 0;
+  return (x | 0) == (y | 0) | 0;
  }
  
  function $22(x, y) {
   x = x | 0;
   y = y | 0;
-  return x >>> 0 < y >>> 0 | 0;
+  return (x | 0) != (y | 0) | 0;
  }
  
  function $23(x, y) {
   x = x | 0;
   y = y | 0;
-  return (x | 0) <= (y | 0) | 0;
+  return (x | 0) < (y | 0) | 0;
  }
  
  function $24(x, y) {
   x = x | 0;
   y = y | 0;
-  return x >>> 0 <= y >>> 0 | 0;
+  return x >>> 0 < y >>> 0 | 0;
  }
  
  function $25(x, y) {
   x = x | 0;
   y = y | 0;
-  return (x | 0) > (y | 0) | 0;
+  return (x | 0) <= (y | 0) | 0;
  }
  
  function $26(x, y) {
   x = x | 0;
   y = y | 0;
-  return x >>> 0 > y >>> 0 | 0;
+  return x >>> 0 <= y >>> 0 | 0;
  }
  
  function $27(x, y) {
   x = x | 0;
   y = y | 0;
-  return (x | 0) >= (y | 0) | 0;
+  return (x | 0) > (y | 0) | 0;
  }
  
  function $28(x, y) {
+  x = x | 0;
+  y = y | 0;
+  return x >>> 0 > y >>> 0 | 0;
+ }
+ 
+ function $29(x, y) {
+  x = x | 0;
+  y = y | 0;
+  return (x | 0) >= (y | 0) | 0;
+ }
+ 
+ function $30(x, y) {
   x = x | 0;
   y = y | 0;
   return x >>> 0 >= y >>> 0 | 0;
@@ -245,22 +252,24 @@ function asmFunc(env) {
   "clz": $15, 
   "ctz": $16, 
   "popcnt": $17, 
-  "eqz": $18, 
-  "eq": $19, 
-  "ne": $20, 
-  "lt_s": $21, 
-  "lt_u": $22, 
-  "le_s": $23, 
-  "le_u": $24, 
-  "gt_s": $25, 
-  "gt_u": $26, 
-  "ge_s": $27, 
-  "ge_u": $28
+  "extend8_s": $18, 
+  "extend16_s": $19, 
+  "eqz": $20, 
+  "eq": $21, 
+  "ne": $22, 
+  "lt_s": $23, 
+  "lt_u": $24, 
+  "le_s": $25, 
+  "le_u": $26, 
+  "gt_s": $27, 
+  "gt_u": $28, 
+  "ge_s": $29, 
+  "ge_u": $30
  };
 }
 
-var retasmFunc = asmFunc(  { abort: function() { throw new Error('abort'); }
-  });
+var retasmFunc = asmFunc({
+});
 export var add = retasmFunc.add;
 export var sub = retasmFunc.sub;
 export var mul = retasmFunc.mul;
@@ -279,6 +288,8 @@ export var rotr = retasmFunc.rotr;
 export var clz = retasmFunc.clz;
 export var ctz = retasmFunc.ctz;
 export var popcnt = retasmFunc.popcnt;
+export var extend8_s = retasmFunc.extend8_s;
+export var extend16_s = retasmFunc.extend16_s;
 export var eqz = retasmFunc.eqz;
 export var eq = retasmFunc.eq;
 export var ne = retasmFunc.ne;
